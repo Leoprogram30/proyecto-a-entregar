@@ -106,7 +106,7 @@ Abrir `http://localhost:5173`.
 
 La aplicación está pensada para un hosting con Apache y PHP. Las rutas son relativas, así que puede instalarse en la raíz de un sitio o en una subcarpeta.
 
-**Frontend.** Copiar el *contenido* de `frontend/dist/` (`index.html`, `assets/`, `favicon.svg` y `.htaccess`) en la carpeta pública del sitio, por ejemplo `public_html/`.
+**Frontend.** Copiar el *contenido* de `frontend/dist/` (`index.html`, `static/`, `favicon.svg` y `.htaccess`) en la carpeta pública del sitio, por ejemplo `public_html/`.
 
 **Backend.** Copiar la carpeta `backend/` junto al frontend, de modo que la API quede en `<sitio>/backend/api/`. El frontend en producción llama a esa ruta relativa. Los archivos `.htaccess` bloquean el acceso directo a `config/`, `helpers/` y `uploads/`.
 

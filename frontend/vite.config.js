@@ -12,6 +12,8 @@ export default defineConfig(({ mode }) => {
     // Rutas relativas: la app funciona en la raíz o en una subcarpeta (XAMPP, cPanel)
     base: './',
     plugins: [react(), tailwindcss()],
+    // Carpeta de archivos compilados (la usa también public/.htaccess)
+    build: { assetsDir: 'static' },
     server: {
       // IPv4 explícito: en Windows "localhost" puede quedar escuchando solo en IPv6 (::1)
       host: '127.0.0.1',

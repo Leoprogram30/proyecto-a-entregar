@@ -2,11 +2,24 @@
 <IfModule mod_rewrite.c>
   RewriteEngine On
   RewriteRule ^index\.html$ - [L]
+  # Un recurso compilado que falta debe dar 404, no la portada
+  RewriteRule ^(static|assets)/ - [L]
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteCond %{REQUEST_FILENAME} !-d
   RewriteCond %{REQUEST_FILENAME} !-l
   RewriteRule . index.html [L]
 </IfModule>
+
+# La portada se revalida siempre; los archivos compilados llevan hash en el nombre y sí se guardan
+<FilesMatch "\.html$">
+  <IfModule mod_expires.c>
+    ExpiresActive Off
+  </IfModule>
+  <IfModule mod_headers.c>
+    Header unset Expires
+    Header set Cache-Control "no-cache, must-revalidate"
+  </IfModule>
+</FilesMatch>
 
 # Seguridad y compresión básica
 <IfModule mod_headers.c>
