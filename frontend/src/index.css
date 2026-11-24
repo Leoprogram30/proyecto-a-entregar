@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --color-ipem-green: #1b5e20;
+    --color-ipem-green-light: #2e7d32;
+    --color-ipem-blue: #0284c7;
+    --color-ipem-gold: #d97706;
+  }
+}
