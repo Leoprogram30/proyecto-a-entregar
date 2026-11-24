@@ -79,3 +79,4 @@ switch ($action) {
         jsonError('Acción no reconocida', 404);
         break;
 }
+

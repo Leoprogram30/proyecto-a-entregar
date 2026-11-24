@@ -109,3 +109,4 @@ function requireRole(array|string $roles): array {
 
     return $user;
 }
+

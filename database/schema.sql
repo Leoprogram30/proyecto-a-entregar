@@ -422,3 +422,4 @@ INSERT INTO `agenda_hitos` (`id`, `docente_id`, `espacio_id`, `titulo`, `descrip
 (3, 4, 26, '1° Hito Evaluativo: Fisiología de la germinación', 'Evaluación escrita y de reconocimiento de plántulas en laboratorio.', 'hito_evaluativo', '2026-04-14', 0, NULL),
 (4, 4, 26, 'Visita técnica a vivero cooperativo de vid de Colonia Caroya', 'Observación de pie americano y técnicas de injerto en campo de productor local.', 'practica_campo', '2026-05-18', 0, NULL),
 (5, 4, 26, 'Entrega de Informe Final de Cultivo (1° Semestre)', 'Defensa oral grupal de las bitácoras hortícolas frente al grupo.', 'entrega_proyecto', '2026-06-22', 0, NULL);
+

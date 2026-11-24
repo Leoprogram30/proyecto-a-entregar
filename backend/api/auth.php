@@ -202,3 +202,4 @@ switch ($action) {
         jsonError('Acción no reconocida en el módulo de autenticación', 404);
         break;
 }
+

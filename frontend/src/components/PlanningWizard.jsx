@@ -536,3 +536,4 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
     </div>
   );
 }
+

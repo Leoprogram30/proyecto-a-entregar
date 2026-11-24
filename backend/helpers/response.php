@@ -36,3 +36,4 @@ function getJsonInput(): array {
     $decoded = json_decode($raw, true);
     return is_array($decoded) ? $decoded : [];
 }
+

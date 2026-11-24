@@ -206,3 +206,4 @@ switch ($action) {
         jsonError('Acción no reconocida en secuencias', 404);
         break;
 }
+

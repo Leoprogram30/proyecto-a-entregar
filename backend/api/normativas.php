@@ -144,3 +144,4 @@ switch ($action) {
         jsonError('Acción no reconocida en normativas', 404);
         break;
 }
+

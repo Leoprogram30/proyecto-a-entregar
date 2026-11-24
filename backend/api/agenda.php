@@ -141,3 +141,4 @@ switch ($action) {
         jsonError('Acción no reconocida en agenda', 404);
         break;
 }
+

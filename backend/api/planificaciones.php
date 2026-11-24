@@ -230,13 +230,14 @@ switch ($action) {
         try {
             $update = $pdo->prepare('
                 UPDATE planificaciones_anuales
-                SET estado = :estado, devolucion_directivo = :devolucion, revisado_por = :revisor_id, fecha_revision = NOW()
+                SET estado = :estado, devolucion_directivo = :devolucion, revisado_por = :revisor_id, fecha_revision = :fec_rev
                 WHERE id = :id
             ');
             $update->execute([
                 'estado'     => $nuevoEstado,
                 'devolucion' => $comentario,
                 'revisor_id' => $user['sub'],
+                'fec_rev'    => date('Y-m-d H:i:s'),
                 'id'         => $id
             ]);
 
@@ -268,3 +269,4 @@ switch ($action) {
         jsonError('Acción no reconocida en planificaciones', 404);
         break;
 }
+

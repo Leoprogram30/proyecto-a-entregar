@@ -29,3 +29,4 @@ function handleCors(): void {
 
     header('Content-Type: application/json; charset=utf-8');
 }
+

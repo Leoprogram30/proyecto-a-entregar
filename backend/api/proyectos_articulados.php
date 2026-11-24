@@ -106,14 +106,15 @@ switch ($action) {
             if ($espacioId) {
                 $insPart = $pdo->prepare('
                     INSERT INTO proyecto_articulado_participantes (proyecto_id, docente_id, espacio_id, aporte_especifico, estado_aporte, fecha_aporte)
-                    VALUES (:pid, :uid, :eid, :aporte, :est, NOW())
+                    VALUES (:pid, :uid, :eid, :aporte, :est, :fec)
                 ');
                 $insPart->execute([
                     'pid'    => $proyectoId,
                     'uid'    => $user['sub'],
                     'eid'    => $espacioId,
                     'aporte' => $aporteInicial ?: 'Propuesta marco del proyecto e integración inicial.',
-                    'est'    => $aporteInicial ? 'completado' : 'pendiente'
+                    'est'    => $aporteInicial ? 'completado' : 'pendiente',
+                    'fec'    => date('Y-m-d H:i:s')
                 ]);
             }
 
@@ -148,7 +149,7 @@ switch ($action) {
 
         $ins = $pdo->prepare('
             INSERT INTO proyecto_articulado_participantes (proyecto_id, docente_id, espacio_id, aporte_especifico, aprendizajes_articulados, estado_aporte, fecha_aporte)
-            VALUES (:pid, :uid, :eid, :aporte, :aprendizajes, :estado, NOW())
+            VALUES (:pid, :uid, :eid, :aporte, :aprendizajes, :estado, :fec)
         ');
         $ins->execute([
             'pid'          => $proyectoId,
@@ -156,7 +157,8 @@ switch ($action) {
             'eid'          => $espacioId,
             'aporte'       => $aporte,
             'aprendizajes' => $aprendizajes,
-            'estado'       => !empty($aporte) ? 'completado' : 'pendiente'
+            'estado'       => !empty($aporte) ? 'completado' : 'pendiente',
+            'fec'          => date('Y-m-d H:i:s')
         ]);
 
         // Actualizar estado del proyecto a en_desarrollo si estaba en convocatoria
@@ -169,3 +171,4 @@ switch ($action) {
         jsonError('Acción no reconocida', 404);
         break;
 }
+

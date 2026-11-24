@@ -92,3 +92,4 @@ switch ($action) {
         jsonError('Acción no reconocida en cronograma', 404);
         break;
 }
+

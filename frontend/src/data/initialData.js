@@ -277,3 +277,4 @@ export const INITIAL_HITOS = [
   { id: 4, docente_id: 4, espacio_id: 26, espacio_nombre: 'Producción Vegetal I', titulo: 'Visita técnica a vivero cooperativo de vid de Colonia Caroya', descripcion: 'Observación de pie americano y técnicas de injerto en campo de productor local.', tipo: 'practica_campo', fecha: '2026-05-18', completado: false },
   { id: 5, docente_id: 4, espacio_id: 26, espacio_nombre: 'Producción Vegetal I', titulo: 'Entrega de Informe Final de Cultivo (1° Semestre)', descripcion: 'Defensa oral grupal de las bitácoras hortícolas frente al grupo.', tipo: 'entrega_proyecto', fecha: '2026-06-22', completado: false }
 ];
+

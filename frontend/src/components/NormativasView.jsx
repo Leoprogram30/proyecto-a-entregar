@@ -156,3 +156,4 @@ export default function NormativasView({ selectedEspacio }) {
     </div>
   );
 }
+
