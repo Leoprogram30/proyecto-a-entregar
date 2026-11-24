@@ -1,209 +1,252 @@
 <?php
 /**
- * Endpoint de Secuencias Didácticas
+ * Secuencias didácticas
  * IPEM N° 349 "Giovanni Bosco"
  */
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/../config/cors.php';
-require_once __DIR__ . '/../config/db.php';
-require_once __DIR__ . '/../helpers/response.php';
-require_once __DIR__ . '/../helpers/auth.php';
+require_once __DIR__ . '/../helpers/bootstrap.php';
 
-handleCors();
+const TEXTO_LARGO = 15000;
+
+const SEC_SELECT = 'SELECT s.*, e.nombre AS espacio_nombre, e.anio AS espacio_anio, e.ciclo AS espacio_ciclo,
+        e.area AS espacio_area, e.horas_catedra,
+        u.nombre AS docente_nombre, u.apellido AS docente_apellido, u.email AS docente_email
+    FROM secuencias_didacticas s
+    JOIN espacios_curriculares e ON s.espacio_id = e.id
+    JOIN usuarios u ON s.docente_id = u.id';
+
+function formatSec(array $s): array {
+    foreach (['contenidos', 'capacidades', 'clases'] as $k) {
+        $s[$k] = decodeList($s[$k] ?? null);
+    }
+    foreach ($s['clases'] as $i => $c) {
+        if (is_array($c)) {
+            $s['clases'][$i]['evaluativa'] = !empty($c['evaluativa']);
+        }
+    }
+    if (isset($s['planificacion_id'])) {
+        $s['planificacion_id'] = (int)$s['planificacion_id'];
+    }
+    return $s;
+}
+
+const SEC_COLS = ['fund' => 'fundamentacion', 'obj' => 'objetivos', 'cont' => 'contenidos', 'cap' => 'capacidades', 'formato' => 'formato',
+    'tiempo' => 'tiempo_estimado', 'agr' => 'agrupamientos', 'amb' => 'ambiente', 'clases' => 'clases', 'prod' => 'producto',
+    'ecri' => 'evaluacion_criterios', 'eins' => 'evaluacion_instrumentos', 'rec' => 'recursos', 'bib' => 'bibliografia',
+    'tipo' => 'tipo_articulacion', 'eje' => 'articulacion_eje', 'mat' => 'articulacion_materias'];
+const SEC_JSON = ['cont', 'cap', 'clases'];
+
+function canViewSec(array $user, array $s): bool {
+    if ((int)$s['docente_id'] === $user['sub']) {
+        return true;
+    }
+    return isDirectivo($user) && $s['estado'] !== 'borrador';
+}
 
 $pdo = getDbConnection();
 $user = requireAuth();
 $action = $_GET['action'] ?? 'list';
-$method = $_SERVER['REQUEST_METHOD'];
 
 switch ($action) {
     case 'list':
-        $espacioId = isset($_GET['espacio_id']) ? (int)$_GET['espacio_id'] : null;
-
-        $query = '
-            SELECT s.*, e.nombre AS espacio_nombre, e.anio AS espacio_anio, e.ciclo AS espacio_ciclo,
-                   u.nombre AS docente_nombre, u.apellido AS docente_apellido
-            FROM secuencias_didacticas s
-            JOIN espacios_curriculares e ON s.espacio_id = e.id
-            JOIN usuarios u ON s.docente_id = u.id
-            WHERE 1=1
-        ';
-        $params = [];
-
-        // Si es docente, solo ve sus secuencias a menos que sea directivo
-        if ($user['rol'] === 'docente') {
-            $query .= ' AND s.docente_id = :docente_id';
-            $params['docente_id'] = $user['sub'];
+        $espacioId = vId($_GET, 'espacio_id', 'espacio', false);
+        // Directivos ven lo enviado a revision (no borradores ajenos); los demas, solo lo propio.
+        if (isDirectivo($user)) {
+            $sql = SEC_SELECT . " WHERE (s.estado <> 'borrador' OR s.docente_id = :uid)";
+        } else {
+            $sql = SEC_SELECT . ' WHERE s.docente_id = :uid';
         }
-
-        if ($espacioId) {
-            $query .= ' AND s.espacio_id = :espacio_id';
+        $params = ['uid' => $user['sub']];
+        if ($espacioId !== null) {
+            $sql .= ' AND s.espacio_id = :espacio_id';
             $params['espacio_id'] = $espacioId;
         }
-
-        $query .= ' ORDER BY s.fecha_actualizacion DESC';
-        $stmt = $pdo->prepare($query);
-        $stmt->execute($params);
-        $secuencias = $stmt->fetchAll();
-
-        jsonSuccess($secuencias, 'Listado de secuencias didácticas');
-        break;
+        $st = $pdo->prepare($sql . ' ORDER BY s.fecha_actualizacion DESC, s.id DESC');
+        $st->execute($params);
+        jsonSuccess(array_map('formatSec', $st->fetchAll()), 'Listado de secuencias didácticas');
 
     case 'detail':
-        $id = (int)($_GET['id'] ?? 0);
-        if (!$id) {
-            jsonError('ID de secuencia requerido');
+        $id = vId($_GET, 'id', 'secuencia');
+        $st = $pdo->prepare(SEC_SELECT . ' WHERE s.id = :id');
+        $st->execute(['id' => $id]);
+        $sec = $st->fetch();
+        if (!$sec) {
+            jsonError('Secuencia no encontrada.', 404);
         }
-
-        $stmt = $pdo->prepare('
-            SELECT s.*, e.nombre AS espacio_nombre, e.anio AS espacio_anio, e.ciclo AS espacio_ciclo,
-                   u.nombre AS docente_nombre, u.apellido AS docente_apellido, u.email AS docente_email
-            FROM secuencias_didacticas s
-            JOIN espacios_curriculares e ON s.espacio_id = e.id
-            JOIN usuarios u ON s.docente_id = u.id
-            WHERE s.id = :id
-            LIMIT 1
-        ');
-        $stmt->execute(['id' => $id]);
-        $secuencia = $stmt->fetch();
-
-        if (!$secuencia) {
-            jsonError('Secuencia no encontrada', 404);
+        if (!canViewSec($user, $sec)) {
+            jsonError('No tiene autorización para ver esta secuencia.', 403);
         }
-
-        jsonSuccess($secuencia, 'Detalle de secuencia didáctica');
-        break;
+        jsonSuccess(formatSec($sec), 'Detalle de secuencia didáctica');
 
     case 'save':
-        if ($method !== 'POST') {
-            jsonError('Método no permitido', 405);
+        requireRole(ROLES_AUTORES);
+        requireMethod('POST');
+        $in = getJsonInput();
+        $id = vId($in, 'id', 'secuencia', false);
+        $espacioId = vId($in, 'espacio_id', 'espacio curricular');
+        requireEspacio($pdo, $espacioId, 'espacio_id', $id ? ['tabla' => 'secuencias_didacticas', 'id' => $id] : null);
+        $titulo = vString($in, 'titulo', 'título', ['required' => true, 'max' => 200]);
+        if ($id) {
+            $q = $pdo->prepare('SELECT docente_id FROM secuencias_didacticas WHERE id = :id');
+            $q->execute(['id' => $id]);
+            $dueno = $q->fetchColumn();
+            if ($dueno !== false && (int)$dueno !== $user['sub']) {
+                jsonError('Solo el autor puede editar esta secuencia.', 403);
+            }
         }
-        $input = getJsonInput();
-        $id = !empty($input['id']) ? (int)$input['id'] : null;
-        $espacioId = (int)($input['espacio_id'] ?? 0);
-        $titulo = trim($input['titulo'] ?? '');
-        $fundamentacion = trim($input['fundamentacion'] ?? '');
-        $propositos = trim($input['propositos'] ?? '');
-        $tiempoEstimado = trim($input['tiempo_estimado'] ?? '4 clases');
-        $actInicio = trim($input['actividades_inicio'] ?? '');
-        $actDesarrollo = trim($input['actividades_desarrollo'] ?? '');
-        $actCierre = trim($input['actividades_cierre'] ?? '');
-        $evaluacion = trim($input['evaluacion'] ?? '');
-        $recursos = trim($input['recursos'] ?? '');
-        $tipoArticulacion = in_array($input['tipo_articulacion'] ?? '', ['ninguna', 'declarativa', 'colaborativa'], true) ? $input['tipo_articulacion'] : 'ninguna';
-        $articulacionEje = trim($input['articulacion_eje'] ?? '');
-        $articulacionMaterias = trim($input['articulacion_materias'] ?? '');
-        $estado = in_array($input['estado'] ?? '', ['borrador', 'pendiente_revision'], true) ? $input['estado'] : 'borrador';
-
-        if (empty($titulo) || !$espacioId) {
-            jsonError('El título y el espacio curricular son obligatorios.');
+        $planId = vId($in, 'planificacion_id', 'planificación', false);
+        if ($planId !== null) {
+            $q = $pdo->prepare('SELECT docente_id, espacio_id FROM planificaciones_anuales WHERE id = :id');
+            $q->execute(['id' => $planId]);
+            $pl = $q->fetch();
+            if (!$pl || (int)$pl['docente_id'] !== $user['sub']) {
+                validationError('planificacion_id', 'La planificación indicada no existe o no es suya.');
+            }
+            if ((int)$pl['espacio_id'] !== $espacioId) {
+                validationError('planificacion_id', 'La planificación debe ser del mismo espacio curricular.');
+            }
         }
+        $v = [
+            'fund' => vString($in, 'fundamentacion', 'fundamentación', ['max' => TEXTO_LARGO]),
+            'obj' => vString($in, 'objetivos', 'objetivos', ['max' => TEXTO_LARGO]),
+            'cont' => vContenidosList($in, 'contenidos'),
+            'cap' => vCatalogList($in, 'capacidades', 'capacidades', CAPACIDADES_FUNDAMENTALES),
+            'formato' => vEnum($in, 'formato', 'formato', FORMATOS_PEDAGOGICOS),
+            'tiempo' => vString($in, 'tiempo_estimado', 'tiempo estimado', ['max' => 100]),
+            'agr' => vString($in, 'agrupamientos', 'agrupamientos', ['max' => TEXTO_LARGO]),
+            'amb' => vString($in, 'ambiente', 'ambiente', ['max' => TEXTO_LARGO]),
+            'clases' => vClases($in, 'clases'),
+            'prod' => vString($in, 'producto', 'producto', ['max' => TEXTO_LARGO]),
+            'ecri' => vString($in, 'evaluacion_criterios', 'criterios de evaluación', ['max' => TEXTO_LARGO]),
+            'eins' => vString($in, 'evaluacion_instrumentos', 'instrumentos de evaluación', ['max' => TEXTO_LARGO]),
+            'rec' => vString($in, 'recursos', 'recursos', ['max' => TEXTO_LARGO]),
+            'bib' => vString($in, 'bibliografia', 'bibliografía', ['max' => TEXTO_LARGO]),
+            'tipo' => vEnum($in, 'tipo_articulacion', 'tipo de articulación', ['ninguna', 'declarativa', 'colaborativa'], false, 'ninguna'),
+            'eje' => vString($in, 'articulacion_eje', 'eje de articulación', ['max' => 255]),
+            'mat' => vString($in, 'articulacion_materias', 'materias de articulación', ['max' => 255]),
+        ];
+        $estado = vEnum($in, 'estado', 'estado', ['borrador', 'pendiente_revision'], false, 'borrador');
+        if ($estado === 'pendiente_revision') {
+            $falt = [];
+            if ($v['obj'] === null) {
+                $falt['objetivos'] = 'Indique los objetivos de la secuencia.';
+            }
+            if (!$v['cont']) {
+                $falt['contenidos'] = 'Seleccione o agregue al menos un contenido.';
+            }
+            if (!$v['clases']) {
+                $falt['clases'] = 'Agregue al menos una clase con sus actividades.';
+            }
+            if ($v['ecri'] === null) {
+                $falt['evaluacion_criterios'] = 'Indique los criterios de evaluación.';
+            }
+            if ($falt) {
+                jsonError('Faltan datos esenciales para enviar la secuencia a revisión.', 422, $falt);
+            }
+        }
+        $params = ['espacio_id' => $espacioId, 'titulo' => $titulo, 'plan' => $planId, 'estado' => $estado];
+        foreach (SEC_COLS as $k => $col) {
+            $params[$k] = in_array($k, SEC_JSON, true) ? json_encode($v[$k], JSON_UNESCAPED_UNICODE) : $v[$k];
+        }
+        $sets = implode(', ', array_map(static fn($k, $c) => "{$c}=:{$k}", array_keys(SEC_COLS), SEC_COLS));
+        $cols = implode(', ', SEC_COLS);
+        $phs = implode(', ', array_map(static fn($k) => ":{$k}", array_keys(SEC_COLS)));
 
         if ($id) {
-            $check = $pdo->prepare('SELECT docente_id FROM secuencias_didacticas WHERE id = :id');
-            $check->execute(['id' => $id]);
-            $row = $check->fetch();
-            if (!$row) {
-                jsonError('Secuencia no encontrada', 404);
+            $st = $pdo->prepare('SELECT docente_id, estado FROM secuencias_didacticas WHERE id = :id');
+            $st->execute(['id' => $id]);
+            $ex = $st->fetch();
+            if (!$ex) {
+                jsonError('Secuencia no encontrada.', 404);
             }
-            if ($user['rol'] === 'docente' && (int)$row['docente_id'] !== (int)$user['sub']) {
-                jsonError('No tiene permisos para editar esta secuencia', 403);
+            if ((int)$ex['docente_id'] !== $user['sub']) {
+                jsonError('Solo el autor puede editar esta secuencia.', 403);
             }
-
-            $updateStmt = $pdo->prepare('
-                UPDATE secuencias_didacticas
-                SET titulo = :titulo, fundamentacion = :fundamentacion, propositos = :propositos,
-                    tiempo_estimado = :tiempo, actividades_inicio = :act_inicio, actividades_desarrollo = :act_des,
-                    actividades_cierre = :act_cie, evaluacion = :evaluacion, recursos = :recursos,
-                    tipo_articulacion = :tipo_art, articulacion_eje = :art_eje, articulacion_materias = :art_mat,
-                    estado = :estado
-                WHERE id = :id
-            ');
-            $updateStmt->execute([
-                'titulo'         => $titulo,
-                'fundamentacion' => $fundamentacion,
-                'propositos'     => $propositos,
-                'tiempo'         => $tiempoEstimado,
-                'act_inicio'     => $actInicio,
-                'act_des'        => $actDesarrollo,
-                'act_cie'        => $actCierre,
-                'evaluacion'     => $evaluacion,
-                'recursos'       => $recursos,
-                'tipo_art'       => $tipoArticulacion,
-                'art_eje'        => $articulacionEje,
-                'art_mat'        => $articulacionMaterias,
-                'estado'         => $estado,
-                'id'             => $id
-            ]);
-
-            jsonSuccess(['id' => $id, 'estado' => $estado], 'Secuencia didáctica actualizada con éxito.');
-        } else {
-            $insertStmt = $pdo->prepare('
-                INSERT INTO secuencias_didacticas
-                (docente_id, espacio_id, titulo, fundamentacion, propositos, tiempo_estimado, actividades_inicio, actividades_desarrollo, actividades_cierre, evaluacion, recursos, tipo_articulacion, articulacion_eje, articulacion_materias, estado)
-                VALUES
-                (:docente_id, :espacio_id, :titulo, :fundamentacion, :propositos, :tiempo, :act_inicio, :act_des, :act_cie, :evaluacion, :recursos, :tipo_art, :art_eje, :art_mat, :estado)
-            ');
-            $insertStmt->execute([
-                'docente_id'     => $user['sub'],
-                'espacio_id'     => $espacioId,
-                'titulo'         => $titulo,
-                'fundamentacion' => $fundamentacion,
-                'propositos'     => $propositos,
-                'tiempo'         => $tiempoEstimado,
-                'act_inicio'     => $actInicio,
-                'act_des'        => $actDesarrollo,
-                'act_cie'        => $actCierre,
-                'evaluacion'     => $evaluacion,
-                'recursos'       => $recursos,
-                'tipo_art'       => $tipoArticulacion,
-                'art_eje'        => $articulacionEje,
-                'art_mat'        => $articulacionMaterias,
-                'estado'         => $estado
-            ]);
-            $newId = (int)$pdo->lastInsertId();
-            jsonSuccess(['id' => $newId, 'estado' => $estado], 'Secuencia didáctica guardada con éxito.');
+            if ($ex['estado'] === 'aprobada') {
+                jsonError('La secuencia está aprobada y no puede modificarse.', 409);
+            }
+            $params['id'] = $id;
+            $pdo->prepare("UPDATE secuencias_didacticas SET espacio_id=:espacio_id, titulo=:titulo, planificacion_id=:plan, {$sets}, estado=:estado WHERE id=:id")->execute($params);
+            jsonSuccess(['id' => $id, 'estado' => $params['estado']], 'Secuencia didáctica actualizada con éxito.');
         }
-        break;
+
+        $params['uid'] = $user['sub'];
+        $pdo->prepare("INSERT INTO secuencias_didacticas (docente_id, espacio_id, titulo, planificacion_id, {$cols}, estado)
+                       VALUES (:uid, :espacio_id, :titulo, :plan, {$phs}, :estado)")->execute($params);
+        jsonSuccess(['id' => (int)$pdo->lastInsertId(), 'estado' => $params['estado']], 'Secuencia didáctica guardada con éxito.', 201);
+
+    case 'duplicate':
+        requireRole(ROLES_AUTORES);
+        requireMethod('POST');
+        $id = vId(getJsonInput(), 'id', 'secuencia');
+        $st = $pdo->prepare('SELECT * FROM secuencias_didacticas WHERE id = :id');
+        $st->execute(['id' => $id]);
+        $orig = $st->fetch();
+        if (!$orig) {
+            jsonError('Secuencia no encontrada.', 404);
+        }
+        if ((int)$orig['docente_id'] !== $user['sub']) {
+            jsonError('Solo puede duplicar sus propias secuencias.', 403);
+        }
+        $cols = implode(', ', SEC_COLS);
+        $phs = implode(', ', array_map(static fn($c) => ":{$c}", SEC_COLS));
+        $params = ['uid' => $user['sub'], 'espacio_id' => (int)$orig['espacio_id'], 'titulo' => mb_substr($orig['titulo'] . ' (copia)', 0, 200),
+                   'plan' => $orig['planificacion_id']];
+        foreach (SEC_COLS as $c) {
+            $params[$c] = $orig[$c];
+        }
+        $pdo->prepare("INSERT INTO secuencias_didacticas (docente_id, espacio_id, titulo, planificacion_id, {$cols}, estado)
+                       VALUES (:uid, :espacio_id, :titulo, :plan, {$phs}, 'borrador')")->execute($params);
+        jsonSuccess(['id' => (int)$pdo->lastInsertId(), 'estado' => 'borrador'], 'Secuencia duplicada como borrador.', 201);
 
     case 'review':
-        if (!in_array($user['rol'], ['admin', 'director', 'coordinador'], true)) {
-            jsonError('Acceso exclusivo para el Equipo Directivo', 403);
+        if (!isDirectivo($user)) {
+            jsonError('Acceso exclusivo para el Equipo Directivo.', 403);
         }
-        if ($method !== 'POST') {
-            jsonError('Método no permitido', 405);
+        requireMethod('POST');
+        $in = getJsonInput();
+        $id = vId($in, 'secuencia_id', 'secuencia');
+        $nuevo = vEnum($in, 'estado', 'estado', ['aprobada', 'requiere_ajustes'], true);
+        $dev = vString($in, 'devolucion', 'devolución', ['max' => 5000]);
+        if ($nuevo === 'requiere_ajustes' && $dev === null) {
+            validationError('devolucion', 'Debe indicar una devolución cuando se solicitan ajustes.');
         }
-
-        $input = getJsonInput();
-        $id = (int)($input['secuencia_id'] ?? 0);
-        $nuevoEstado = trim($input['estado'] ?? '');
-        $devolucion = trim($input['devolucion'] ?? '');
-
-        if (!$id || !in_array($nuevoEstado, ['pendiente_revision', 'aprobada', 'requiere_ajustes'], true)) {
-            jsonError('Parámetros de revisión inválidos.');
+        $st = $pdo->prepare('SELECT docente_id, estado FROM secuencias_didacticas WHERE id = :id');
+        $st->execute(['id' => $id]);
+        $sec = $st->fetch();
+        if (!$sec) {
+            jsonError('Secuencia no encontrada.', 404);
         }
+        if ((int)$sec['docente_id'] === $user['sub']) {
+            jsonError('No puede revisar su propia secuencia.', 403);
+        }
+        if ($sec['estado'] === 'borrador') {
+            jsonError('La secuencia aún es un borrador y no fue enviada a revisión.', 409);
+        }
+        $pdo->prepare('UPDATE secuencias_didacticas SET estado=:estado, devolucion_directivo=:dev WHERE id=:id')
+            ->execute(['estado' => $nuevo, 'dev' => $dev, 'id' => $id]);
+        jsonSuccess(['secuencia_id' => $id, 'estado' => $nuevo], "Secuencia revisada. Estado: {$nuevo}.");
 
-        $stmt = $pdo->prepare('
-            UPDATE secuencias_didacticas
-            SET estado = :estado, devolucion_directivo = :devolucion
-            WHERE id = :id
-        ');
-        $stmt->execute([
-            'estado'     => $nuevoEstado,
-            'devolucion' => $devolucion,
-            'id'         => $id
-        ]);
-
-        jsonSuccess([
-            'secuencia_id' => $id,
-            'estado'       => $nuevoEstado
-        ], "Secuencia didáctica revisada. Estado: {$nuevoEstado}.");
-        break;
+    case 'delete':
+        requireMethod('POST');
+        $id = vId(getJsonInput(), 'id', 'secuencia');
+        $st = $pdo->prepare('SELECT docente_id, estado FROM secuencias_didacticas WHERE id = :id');
+        $st->execute(['id' => $id]);
+        $sec = $st->fetch();
+        if (!$sec) {
+            jsonError('Secuencia no encontrada.', 404);
+        }
+        if ((int)$sec['docente_id'] !== $user['sub']) {
+            jsonError('Solo el autor puede eliminar esta secuencia.', 403);
+        }
+        if ($sec['estado'] === 'aprobada') {
+            jsonError('Una secuencia aprobada no puede eliminarse.', 409);
+        }
+        $pdo->prepare('DELETE FROM secuencias_didacticas WHERE id = :id')->execute(['id' => $id]);
+        jsonSuccess(['id' => $id], 'Secuencia eliminada.');
 
     default:
-        jsonError('Acción no reconocida en secuencias', 404);
-        break;
+        jsonError('Acción no reconocida en secuencias.', 404);
 }
-

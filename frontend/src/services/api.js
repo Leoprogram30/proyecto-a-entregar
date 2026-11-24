@@ -1,544 +1,221 @@
 /**
- * Cliente de Conexión a la API RESTful PHP y Persistencia Local
+ * Cliente de la API REST PHP.
  * IPEM N° 349 "Giovanni Bosco" - Colonia Caroya
+ *
+ * No hay datos simulados: todo error (red, HTTP, formato) se lanza como ApiError.
+ * Lo único que se guarda en el navegador es el token de sesión.
  */
 
-import {
-  INITIAL_ESPACIOS,
-  INITIAL_CURRICULUM_CONTENIDOS,
-  INITIAL_NORMATIVAS,
-  INITIAL_CRONOGRAMA,
-  INITIAL_USERS,
-  INITIAL_PLANIFICACIONES,
-  INITIAL_SECUENCIAS,
-  INITIAL_PROYECTOS_ARTICULADOS,
-  INITIAL_HITOS
-} from '../data/initialData';
+// En desarrollo se usa el proxy de Vite ('/backend/api'); en producción una ruta
+// relativa al documento, para que funcione también en subcarpetas (XAMPP, cPanel).
+const API_BASE_URL = (
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.DEV ? '/backend/api' : 'backend/api')
+).replace(/\/+$/, '');
 
-// URL base de la API PHP en producción o desarrollo
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/backend/api';
+const TOKEN_KEY = 'ipem349_token';
+export const SESSION_EXPIRED_EVENT = 'ipem349:session-expired';
 
-// Helper de almacenamiento seguro en localStorage para fallback
-const loadStorage = (key, fallback) => {
+export class ApiError extends Error {
+  constructor(message, status = 0, details = null) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.details = details;
+  }
+}
+
+const getToken = () => {
   try {
-    const item = localStorage.getItem(`ipem349_${key}`);
-    return item ? JSON.parse(item) : fallback;
-  } catch (e) {
-    return fallback;
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
   }
 };
 
-const saveStorage = (key, data) => {
+const setToken = (token) => {
   try {
-    localStorage.setItem(`ipem349_${key}`, JSON.stringify(data));
-  } catch (e) {
-    console.error('Error guardando en almacenamiento local:', e);
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // almacenamiento no disponible: la sesión dura lo que dure la página
   }
 };
 
-// Inicializar almacenamiento local si no existe
-let localUsers = loadStorage('users', INITIAL_USERS);
-let localPlanificaciones = loadStorage('planificaciones', INITIAL_PLANIFICACIONES);
-let localSecuencias = loadStorage('secuencias', INITIAL_SECUENCIAS);
-let localProyectos = loadStorage('proyectos', INITIAL_PROYECTOS_ARTICULADOS);
-let localHitos = loadStorage('hitos', INITIAL_HITOS);
-let localCronograma = loadStorage('cronograma', INITIAL_CRONOGRAMA);
-let localNormativas = loadStorage('normativas', INITIAL_NORMATIVAS);
+const buildUrl = (file, action, params = {}) => {
+  const qs = new URLSearchParams({ action });
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, v);
+  });
+  return `${API_BASE_URL}/${file}?${qs.toString()}`;
+};
 
-// Helper para peticiones HTTP a la API PHP con token
-const request = async (endpoint, options = {}) => {
-  const token = localStorage.getItem('ipem349_token');
-  const headers = {
-    'Content-Type': 'application/json',
-    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-    ...(options.headers || {})
-  };
+// Acciones donde un 401 NO significa "sesión vencida"
+const isAuthFailureAllowed = (url) =>
+  /[?&]action=(login|register|change_password)(&|$)/.test(url);
 
+const parseResponse = async (res) => {
+  const text = await res.text();
   try {
-    const res = await fetch(`${API_BASE_URL}/${endpoint}`, {
-      ...options,
-      headers
+    return JSON.parse(text);
+  } catch {
+    const msg = res.ok
+      ? 'El servidor devolvió una respuesta que no es JSON válido.'
+      : `Error del servidor (HTTP ${res.status}). Respuesta no válida.`;
+    throw new ApiError(msg, res.status);
+  }
+};
+
+const request = async (url, { method = 'GET', body, formData } = {}) => {
+  const token = getToken();
+  const headers = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers,
+      body: formData || (body !== undefined ? JSON.stringify(body) : undefined)
     });
-    const data = await res.json();
-    if (!res.ok || !data.success) {
-      throw new Error(data.message || 'Error en la respuesta del servidor');
-    }
-    return data.data;
-  } catch (err) {
-    // Si no hay backend PHP corriendo o da error de red, lanzamos para usar el fallback local
-    throw err;
+  } catch {
+    throw new ApiError('No se pudo conectar con el servidor. Verifique su conexión e intente nuevamente.');
   }
+
+  const payload = await parseResponse(res);
+
+  if (res.status === 401 && token && !isAuthFailureAllowed(url)) {
+    setToken(null);
+    window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
+    throw new ApiError(payload.message || 'Su sesión expiró. Ingrese nuevamente.', 401);
+  }
+
+  if (!res.ok || !payload.success) {
+    throw new ApiError(payload.message || 'Error en la respuesta del servidor.', res.status, payload.details || null);
+  }
+  return payload.data;
 };
+
+const get = (file, action, params) => request(buildUrl(file, action, params));
+const post = (file, action, body = {}) => request(buildUrl(file, action), { method: 'POST', body });
 
 export const api = {
-  // -------------------------------------------------------------
-  // AUTENTICACIÓN Y USUARIOS
-  // -------------------------------------------------------------
+  // ---- Sesión y usuarios ----
+  hasToken: () => Boolean(getToken()),
+  logout: () => setToken(null),
+
   async login(email, password) {
+    const res = await post('auth.php', 'login', { email, password });
+    setToken(res.token);
+    return res.user;
+  },
+  register: (data) => post('auth.php', 'register', data),
+  getMe: () => get('auth.php', 'me'),
+  changePassword: (actual, nueva) => post('auth.php', 'change_password', { actual, nueva }),
+  updateProfile: (d) => post('auth.php', 'update_profile', d),
+  getPendingUsers: () => get('auth.php', 'pending_users'),
+  getAllUsers: () => get('auth.php', 'all_users'),
+  updateUserStatus: (userId, estado, rol) =>
+    post('auth.php', 'update_status', { user_id: userId, estado, ...(rol ? { rol } : {}) }),
+  createUser: (d) => post('auth.php', 'create_user', d),
+  updateUser: (userId, d) => post('auth.php', 'update_user', { ...d, user_id: userId }),
+  resetUserPassword: (userId, nueva) => post('auth.php', 'reset_password', { user_id: userId, nueva }),
+  deleteUser: (userId) => post('auth.php', 'delete_user', { user_id: userId }),
+
+  // ---- Espacios curriculares ----
+  getEspacios: ({ ciclo, anio, incluir_inactivas } = {}) =>
+    get('espacios.php', 'list', { ciclo, anio, incluir_inactivas: incluir_inactivas ? 1 : undefined }),
+  getEspacioDetail: (id, { todos } = {}) => get('espacios.php', 'detail', { id, todos: todos ? 1 : undefined }),
+  saveEspacio: (d) => post('espacios.php', 'save', d),
+  deleteEspacio: (id) => post('espacios.php', 'delete', { id }),
+  saveContenido: (d) => post('espacios.php', 'contenido_save', d),
+  deleteContenido: (id) => post('espacios.php', 'contenido_delete', { id }),
+
+  // ---- Cronograma ----
+  getCronograma: (anio) => get('cronograma.php', 'list', { anio }),
+  saveCronogramaEvento: (d) => post('cronograma.php', 'save', d),
+  deleteCronogramaEvento: (id) => post('cronograma.php', 'delete', { id }),
+
+  // ---- Normativas ----
+  getNormativas: ({ tipo, espacio_id } = {}) => get('normativas.php', 'list', { tipo, espacio_id }),
+  uploadNormativa: (formData) =>
+    request(buildUrl('normativas.php', 'upload'), { method: 'POST', formData }),
+  deleteNormativa: (id) => post('normativas.php', 'delete', { id }),
+
+  async descargarNormativa(doc) {
+    const token = getToken();
+    let res;
     try {
-      const res = await request('auth.php?action=login', {
-        method: 'POST',
-        body: JSON.stringify({ email, password })
+      res = await fetch(buildUrl('normativas.php', 'download', { id: doc.id }), {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
-      localStorage.setItem('ipem349_token', res.token);
-      localStorage.setItem('ipem349_current_user', JSON.stringify(res.user));
-      return res.user;
-    } catch (err) {
-      // Fallback local
-      const user = localUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
-      if (!user) {
-        throw new Error('Credenciales incorrectas o usuario no registrado.');
+    } catch {
+      throw new ApiError('No se pudo conectar con el servidor.');
+    }
+    if (!res.ok) {
+      if (res.status === 401 && token) {
+        setToken(null);
+        window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
       }
-      if (user.estado === 'pendiente') {
-        throw new Error('Su cuenta se encuentra PENDIENTE de aprobación por la Administración del IPEM 349.');
+      let msg = res.status === 404 ? 'El documento no tiene un archivo PDF disponible.' : 'No se pudo descargar el documento.';
+      try {
+        const p = JSON.parse(await res.text());
+        if (p.message) msg = p.message;
+      } catch {
+        // se mantiene el mensaje por defecto
       }
-      if (user.estado === 'rechazado') {
-        throw new Error('Su solicitud de acceso ha sido rechazada por la administración escolar.');
-      }
-
-      // Validar contraseñas estándar de prueba
-      const validPass = (user.rol === 'admin' && password === 'admin123') ||
-                        (user.rol === 'director' && password === 'director123') ||
-                        (user.rol === 'coordinador' && password === 'director123') ||
-                        (user.rol === 'docente' && (password === 'docente123' || password === 'admin123'));
-      if (!validPass) {
-        throw new Error('Contraseña incorrecta.');
-      }
-
-      const mockToken = 'mock-jwt-token-' + user.id;
-      localStorage.setItem('ipem349_token', mockToken);
-      localStorage.setItem('ipem349_current_user', JSON.stringify(user));
-      return user;
+      throw new ApiError(msg, res.status);
     }
+    const blob = await res.blob();
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = `${(doc.titulo || 'normativa').replace(/[^\p{L}\p{N} -]+/gu, '').trim() || 'normativa'}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 1000);
   },
 
-  async register(formData) {
-    try {
-      return await request('auth.php?action=register', {
-        method: 'POST',
-        body: JSON.stringify(formData)
-      });
-    } catch (err) {
-      // Fallback local
-      const exists = localUsers.some(u => u.email === formData.email || u.dni === formData.dni);
-      if (exists) {
-        throw new Error('Ya existe un usuario con este DNI o correo electrónico.');
-      }
-      const newUser = {
-        id: Date.now(),
-        nombre: formData.nombre,
-        apellido: formData.apellido,
-        dni: formData.dni,
-        email: formData.email,
-        rol: formData.rol || 'docente',
-        cargo_descripcion: formData.cargo_descripcion || 'Docente de Nivel Secundario',
-        estado: 'pendiente'
-      };
-      localUsers.push(newUser);
-      saveStorage('users', localUsers);
-      return {
-        message: 'Solicitud enviada con éxito. Su cuenta se encuentra en estado Pendiente de Aprobación por el Administrador.'
-      };
-    }
-  },
+  // ---- Planificaciones ----
+  getMyPlanificaciones: () => get('planificaciones.php', 'my_plans'),
+  getAllPlanificaciones: (filtros = {}) => get('planificaciones.php', 'all_plans', filtros),
+  getPlanificacionDetail: (id) => get('planificaciones.php', 'detail', { id }),
+  savePlanificacion: (d) => post('planificaciones.php', 'save', d),
+  reviewPlanificacion: (d) => post('planificaciones.php', 'review', d),
+  deletePlanificacion: (id) => post('planificaciones.php', 'delete', { id }),
+  duplicatePlanificacion: (d) => post('planificaciones.php', 'duplicate', d),
 
-  getCurrentUser() {
-    try {
-      const stored = localStorage.getItem('ipem349_current_user');
-      return stored ? JSON.parse(stored) : null;
-    } catch {
-      return null;
-    }
-  },
+  // ---- Secuencias ----
+  getSecuencias: (espacioId) => get('secuencias.php', 'list', { espacio_id: espacioId }),
+  saveSecuencia: (d) => post('secuencias.php', 'save', d),
+  reviewSecuencia: (d) => post('secuencias.php', 'review', d),
+  deleteSecuencia: (id) => post('secuencias.php', 'delete', { id }),
+  duplicateSecuencia: (id) => post('secuencias.php', 'duplicate', { id }),
 
-  logout() {
-    localStorage.removeItem('ipem349_token');
-    localStorage.removeItem('ipem349_current_user');
-  },
+  // ---- Proyectos articulados ----
+  getProyectosArticulados: () => get('proyectos_articulados.php', 'list'),
+  getProyectoArt: (id) => get('proyectos_articulados.php', 'detail', { id }),
+  createProyectoArticulado: (d) => post('proyectos_articulados.php', 'create', d),
+  updateProyectoArt: (d) => post('proyectos_articulados.php', 'update', d),
+  proyectoArtAccion: (accion, d) => post('proyectos_articulados.php', accion, d),
+  getDocentesDisponibles: () => get('proyectos_articulados.php', 'docentes_disponibles'),
+  getSugerenciasArt: (curso, texto) => get('proyectos_articulados.php', 'sugerencias', { curso, texto }),
+  getCatalogoArt: (espacio_id, q) => get('proyectos_articulados.php', 'catalogo', { espacio_id, q }),
 
-  async getPendingUsers() {
-    try {
-      return await request('auth.php?action=pending_users');
-    } catch {
-      return localUsers.filter(u => u.estado === 'pendiente');
-    }
-  },
+  // ---- Institución / precursora ----
+  getRutas: () => get('institucion.php', 'rutas'),
+  saveRuta: (d) => post('institucion.php', 'ruta_save', d),
+  getPrecursora: (anio) => get('institucion.php', 'precursora', { anio }),
+  saveAccionPrecursora: (d) => post('institucion.php', 'accion_save', d),
 
-  async updateUserStatus(userId, estado) {
-    try {
-      return await request('auth.php?action=update_status', {
-        method: 'POST',
-        body: JSON.stringify({ user_id: userId, estado })
-      });
-    } catch {
-      localUsers = localUsers.map(u => u.id === userId ? { ...u, estado } : u);
-      saveStorage('users', localUsers);
-      return { user_id: userId, estado };
-    }
-  },
+  // ---- Agenda ----
+  getInicio: () => get('inicio.php', 'resumen'),
 
-  async getAllUsers() {
-    try {
-      return await request('auth.php?action=all_users');
-    } catch {
-      return localUsers;
-    }
-  },
-
-  // -------------------------------------------------------------
-  // ESPACIOS CURRICULARES (Malla de Córdoba)
-  // -------------------------------------------------------------
-  async getEspacios(ciclo = null, anio = null) {
-    try {
-      let query = 'espacios.php?action=list';
-      if (ciclo) query += `&ciclo=${ciclo}`;
-      if (anio) query += `&anio=${anio}`;
-      return await request(query);
-    } catch {
-      return INITIAL_ESPACIOS.filter(e => {
-        if (ciclo && e.ciclo !== ciclo) return false;
-        if (anio && e.anio !== Number(anio)) return false;
-        return true;
-      });
-    }
-  },
-
-  async getEspacioDetail(id) {
-    try {
-      return await request(`espacios.php?action=detail&id=${id}`);
-    } catch {
-      const espacio = INITIAL_ESPACIOS.find(e => e.id === Number(id));
-      const curr = INITIAL_CURRICULUM_CONTENIDOS[id] || {
-        objetivos: [
-          `Desarrollar capacidades de análisis crítico y resolución de situaciones problemáticas en ${espacio?.nombre || 'el espacio curricular'}.`,
-          'Fomentar el trabajo en equipo, la comunicación oral y escrita y el compromiso institucional.',
-          'Vincular los aprendizajes con el contexto socioproductivo y ambiental de Colonia Caroya.'
-        ],
-        contenidos: [
-          'Eje 1: Conceptos Fundamentales y Marco Teórico de la disciplina.',
-          'Eje 2: Procedimientos Técnicos y Experimentación Práctica.',
-          'Eje 3: Integración de Saberes y Aplicación al Entorno Productivo Local.'
-        ]
-      };
-      const normativas = localNormativas.filter(n => !n.espacio_id || n.espacio_id === Number(id));
-      return { espacio, contenidos: curr, normativas };
-    }
-  },
-
-  // -------------------------------------------------------------
-  // PLANIFICACIONES ANUALES
-  // -------------------------------------------------------------
-  async getMyPlanificaciones(docenteId) {
-    try {
-      return await request('planificaciones.php?action=my_plans');
-    } catch {
-      return localPlanificaciones.filter(p => !docenteId || p.docente_id === docenteId);
-    }
-  },
-
-  async getAllPlanificaciones(filters = {}) {
-    try {
-      let q = 'planificaciones.php?action=all_plans';
-      if (filters.ciclo) q += `&ciclo=${filters.ciclo}`;
-      if (filters.anio) q += `&anio=${filters.anio}`;
-      if (filters.estado) q += `&estado=${filters.estado}`;
-      return await request(q);
-    } catch {
-      return localPlanificaciones.filter(p => {
-        if (filters.ciclo && p.espacio_ciclo !== filters.ciclo) return false;
-        if (filters.anio && Number(p.espacio_anio) !== Number(filters.anio)) return false;
-        if (filters.estado && p.estado !== filters.estado) return false;
-        return true;
-      });
-    }
-  },
-
-  async savePlanificacion(plan) {
-    try {
-      return await request('planificaciones.php?action=save', {
-        method: 'POST',
-        body: JSON.stringify(plan)
-      });
-    } catch {
-      if (plan.id) {
-        localPlanificaciones = localPlanificaciones.map(p => p.id === plan.id ? { ...p, ...plan, fecha_actualizacion: new Date().toISOString() } : p);
-      } else {
-        const newPlan = {
-          ...plan,
-          id: Date.now(),
-          fecha_creacion: new Date().toISOString(),
-          fecha_actualizacion: new Date().toISOString()
-        };
-        localPlanificaciones.unshift(newPlan);
-      }
-      saveStorage('planificaciones', localPlanificaciones);
-      return { success: true };
-    }
-  },
-
-  async reviewPlanificacion(planId, estado, comentario) {
-    try {
-      return await request('planificaciones.php?action=review', {
-        method: 'POST',
-        body: JSON.stringify({ planificacion_id: planId, estado, comentario })
-      });
-    } catch {
-      localPlanificaciones = localPlanificaciones.map(p => {
-        if (p.id === planId) {
-          return {
-            ...p,
-            estado,
-            devolucion_directivo: comentario,
-            fecha_revision: new Date().toISOString().split('T')[0]
-          };
-        }
-        return p;
-      });
-      saveStorage('planificaciones', localPlanificaciones);
-      return { success: true };
-    }
-  },
-
-  // -------------------------------------------------------------
-  // SECUENCIAS DIDÁCTICAS
-  // -------------------------------------------------------------
-  async getSecuencias(espacioId = null) {
-    try {
-      const q = espacioId ? `secuencias.php?action=list&espacio_id=${espacioId}` : 'secuencias.php?action=list';
-      return await request(q);
-    } catch {
-      return localSecuencias.filter(s => !espacioId || s.espacio_id === Number(espacioId));
-    }
-  },
-
-  async saveSecuencia(secuencia) {
-    try {
-      return await request('secuencias.php?action=save', {
-        method: 'POST',
-        body: JSON.stringify(secuencia)
-      });
-    } catch {
-      if (secuencia.id) {
-        localSecuencias = localSecuencias.map(s => s.id === secuencia.id ? { ...s, ...secuencia } : s);
-      } else {
-        localSecuencias.unshift({ ...secuencia, id: Date.now() });
-      }
-      saveStorage('secuencias', localSecuencias);
-      return { success: true };
-    }
-  },
-
-  async reviewSecuencia(secuenciaId, estado, devolucion) {
-    try {
-      return await request('secuencias.php?action=review', {
-        method: 'POST',
-        body: JSON.stringify({ secuencia_id: secuenciaId, estado, devolucion })
-      });
-    } catch {
-      localSecuencias = localSecuencias.map(s => s.id === secuenciaId ? { ...s, estado, devolucion_directivo: devolucion } : s);
-      saveStorage('secuencias', localSecuencias);
-      return { success: true };
-    }
-  },
-
-  // -------------------------------------------------------------
-  // PROYECTOS ARTICULADOS INTERDISCIPLINARIOS
-  // -------------------------------------------------------------
-  async getProyectosArticulados() {
-    try {
-      return await request('proyectos_articulados.php?action=list');
-    } catch {
-      return localProyectos;
-    }
-  },
-
-  async createProyectoArticulado(data) {
-    try {
-      return await request('proyectos_articulados.php?action=create', {
-        method: 'POST',
-        body: JSON.stringify(data)
-      });
-    } catch {
-      const newProj = {
-        id: Date.now(),
-        titulo: data.titulo,
-        descripcion: data.descripcion,
-        problema_contexto: data.problema_contexto,
-        producto_final: data.producto_final,
-        creador_id: data.creador_id || 4,
-        creador_nombre: data.creador_nombre || 'Docente Caroya',
-        estado: 'convocatoria',
-        participantes: [
-          {
-            id: Date.now(),
-            docente_id: data.creador_id || 4,
-            docente_nombre: data.creador_nombre || 'Docente Caroya',
-            espacio_id: data.espacio_creador_id,
-            espacio_nombre: data.espacio_creador_nombre || 'Espacio Iniciador',
-            aporte_especifico: data.aporte_inicial || 'Marco del proyecto y articulación general.',
-            estado_aporte: 'completado'
-          }
-        ]
-      };
-      localProyectos.unshift(newProj);
-      saveStorage('proyectos', localProyectos);
-      return newProj;
-    }
-  },
-
-  async joinProyectoArticulado(data) {
-    try {
-      return await request('proyectos_articulados.php?action=join', {
-        method: 'POST',
-        body: JSON.stringify(data)
-      });
-    } catch {
-      localProyectos = localProyectos.map(p => {
-        if (p.id === data.proyecto_id) {
-          const participantes = p.participantes || [];
-          participantes.push({
-            id: Date.now(),
-            docente_id: data.docente_id,
-            docente_nombre: data.docente_nombre,
-            espacio_id: data.espacio_id,
-            espacio_nombre: data.espacio_nombre,
-            aporte_especifico: data.aporte_especifico,
-            aprendizajes_articulados: data.aprendizajes_articulados,
-            estado_aporte: 'completado'
-          });
-          return { ...p, estado: 'en_desarrollo', participantes };
-        }
-        return p;
-      });
-      saveStorage('proyectos', localProyectos);
-      return { success: true };
-    }
-  },
-
-  // -------------------------------------------------------------
-  // AGENDA E HITOS
-  // -------------------------------------------------------------
-  async getHitos(espacioId = null, docenteId = null) {
-    try {
-      let q = 'agenda.php?action=list';
-      if (espacioId) q += `&espacio_id=${espacioId}`;
-      if (docenteId) q += `&docente_id=${docenteId}`;
-      return await request(q);
-    } catch {
-      const items = localHitos.filter(h => (!espacioId || h.espacio_id === Number(espacioId)) && (!docenteId || h.docente_id === Number(docenteId)));
-      const total = items.length;
-      const completados = items.filter(h => h.completado).length;
-      return {
-        hitos: items,
-        metricas: {
-          total,
-          completados,
-          pendientes: total - completados,
-          porcentaje: total > 0 ? Math.round((completados / total) * 100) : 0
-        }
-      };
-    }
-  },
-
-  async createHito(hito) {
-    try {
-      return await request('agenda.php?action=create', {
-        method: 'POST',
-        body: JSON.stringify(hito)
-      });
-    } catch {
-      const newHito = { ...hito, id: Date.now(), completado: false };
-      localHitos.push(newHito);
-      saveStorage('hitos', localHitos);
-      return newHito;
-    }
-  },
-
-  async toggleHito(hitoId) {
-    try {
-      return await request('agenda.php?action=toggle', {
-        method: 'POST',
-        body: JSON.stringify({ id: hitoId })
-      });
-    } catch {
-      localHitos = localHitos.map(h => h.id === hitoId ? { ...h, completado: !h.completado } : h);
-      saveStorage('hitos', localHitos);
-      return { success: true };
-    }
-  },
-
-  // -------------------------------------------------------------
-  // CRONOGRAMA INSTITUCIONAL
-  // -------------------------------------------------------------
-  async getCronograma(anio = 2026) {
-    try {
-      return await request(`cronograma.php?action=list&anio=${anio}`);
-    } catch {
-      return localCronograma;
-    }
-  },
-
-  async saveCronogramaEvento(evento) {
-    try {
-      return await request('cronograma.php?action=save', {
-        method: 'POST',
-        body: JSON.stringify(evento)
-      });
-    } catch {
-      if (evento.id) {
-        localCronograma = localCronograma.map(c => c.id === evento.id ? { ...c, ...evento } : c);
-      } else {
-        localCronograma.push({ ...evento, id: Date.now() });
-      }
-      saveStorage('cronograma', localCronograma);
-      return { success: true };
-    }
-  },
-
-  // -------------------------------------------------------------
-  // REPOSITORIO NORMATIVO
-  // -------------------------------------------------------------
-  async getNormativas(tipo = null, espacioId = null) {
-    try {
-      let q = 'normativas.php?action=list';
-      if (tipo) q += `&tipo=${tipo}`;
-      if (espacioId) q += `&espacio_id=${espacioId}`;
-      return await request(q);
-    } catch {
-      return localNormativas.filter(n => {
-        if (tipo && n.tipo !== tipo) return false;
-        if (espacioId && n.espacio_id && n.espacio_id !== Number(espacioId)) return false;
-        return true;
-      });
-    }
-  },
-
-  async uploadNormativa(formData) {
-    try {
-      const token = localStorage.getItem('ipem349_token');
-      const res = await fetch(`${API_BASE_URL}/normativas.php?action=upload`, {
-        method: 'POST',
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
-        body: formData
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.message);
-      return data.data;
-    } catch {
-      const newDoc = {
-        id: Date.now(),
-        titulo: formData.get ? formData.get('titulo') : formData.titulo,
-        tipo: formData.get ? formData.get('tipo') : formData.tipo,
-        resolucion_numero: formData.get ? formData.get('resolucion_numero') : formData.resolucion_numero,
-        organismo: 'Ministerio de Educación de Córdoba - DGESec',
-        url_oficial: formData.get ? formData.get('url_oficial') : formData.url_oficial,
-        archivo_pdf: 'normativa_cba_reciente.pdf',
-        descripcion: formData.get ? formData.get('descripcion') : formData.descripcion
-      };
-      localNormativas.unshift(newDoc);
-      saveStorage('normativas', localNormativas);
-      return newDoc;
-    }
-  }
+  getHitos: ({ espacio_id, docente_id } = {}) => get('agenda.php', 'list', { espacio_id, docente_id }),
+  createHito: (d) => post('agenda.php', 'create', d),
+  updateHito: (d) => post('agenda.php', 'update', d),
+  toggleHito: (id) => post('agenda.php', 'toggle', { id }),
+  deleteHito: (id) => post('agenda.php', 'delete', { id })
 };
-

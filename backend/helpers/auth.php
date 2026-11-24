@@ -1,112 +1,137 @@
 <?php
 /**
- * Autenticación y Verificación de Tokens (JWT puro en PHP sin librerías externas)
+ * Autenticación JWT (HS256, sin librerías) y autorización por rol.
+ * El token solo identifica al usuario (sub); rol y estado se leen de la BD en cada request.
  * IPEM N° 349 "Giovanni Bosco"
  */
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/response.php';
+const ROLES_DIRECTIVOS = ['admin', 'director', 'coordinador'];
+const ROLES_AUTORES    = ['docente', 'coordinador'];
 
-define('JWT_SECRET', getenv('JWT_SECRET') ?: 'IPEM349_CAROYA_AGRO_SECRET_2026_COLONIA_BOSCO!');
+/** Secreto JWT: env/config.local.php, o archivo generado en config/.jwt_secret. */
+function jwtSecret(): string {
+    static $secret = null;
+    if ($secret !== null) {
+        return $secret;
+    }
+    $fromCfg = appConfig('jwt_secret');
+    if ($fromCfg !== null && strlen($fromCfg) >= 16) {
+        return $secret = $fromCfg;
+    }
+    $file = __DIR__ . '/../config/.jwt_secret';
+    if (is_file($file)) {
+        $s = trim((string)file_get_contents($file));
+        if (strlen($s) >= 32) {
+            return $secret = $s;
+        }
+    }
+    $s = bin2hex(random_bytes(32));
+    if (file_put_contents($file, $s, LOCK_EX) === false) {
+        throw new RuntimeException('No se pudo guardar config/.jwt_secret (revise permisos de escritura).');
+    }
+    @chmod($file, 0600);
+    return $secret = $s;
+}
 
 function base64UrlEncode(string $data): string {
     return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
 }
 
 function base64UrlDecode(string $data): string {
-    return base64_decode(strtr($data, '-_', '+/'));
+    return (string)base64_decode(strtr($data, '-_', '+/'), false);
 }
 
-function generateToken(array $user, int $expirySeconds = 86400 * 7): string {
-    $header = json_encode(['typ' => 'JWT', 'alg' => 'HS256']);
-    $payload = json_encode([
-        'sub'    => $user['id'],
-        'email'  => $user['email'],
-        'nombre' => $user['nombre'],
-        'apellido' => $user['apellido'],
-        'rol'    => $user['rol'],
-        'cargo'  => $user['cargo_descripcion'] ?? '',
-        'estado' => $user['estado'],
-        'iat'    => time(),
-        'exp'    => time() + $expirySeconds
-    ]);
-
-    $base64Header = base64UrlEncode($header);
-    $base64Payload = base64UrlEncode($payload);
-
-    $signature = hash_hmac('sha256', "{$base64Header}.{$base64Payload}", JWT_SECRET, true);
-    $base64Signature = base64UrlEncode($signature);
-
-    return "{$base64Header}.{$base64Payload}.{$base64Signature}";
+function generateToken(int $userId, int $expirySeconds = 86400 * 7): string {
+    $header  = base64UrlEncode(json_encode(['typ' => 'JWT', 'alg' => 'HS256']));
+    $payload = base64UrlEncode(json_encode([
+        'sub' => $userId,
+        'iat' => time(),
+        'exp' => time() + $expirySeconds,
+    ]));
+    $sig = base64UrlEncode(hash_hmac('sha256', "{$header}.{$payload}", jwtSecret(), true));
+    return "{$header}.{$payload}.{$sig}";
 }
 
 function verifyToken(?string $jwt): ?array {
     if (!$jwt) {
         return null;
     }
-
     $parts = explode('.', $jwt);
     if (count($parts) !== 3) {
         return null;
     }
+    [$h, $p, $s] = $parts;
 
-    [$base64Header, $base64Payload, $base64Signature] = $parts;
-
-    $signature = base64UrlDecode($base64Signature);
-    $expectedSignature = hash_hmac('sha256', "{$base64Header}.{$base64Payload}", JWT_SECRET, true);
-
-    if (!hash_equals($signature, $expectedSignature)) {
+    $header = json_decode(base64UrlDecode($h), true);
+    if (!is_array($header) || ($header['alg'] ?? '') !== 'HS256') {
         return null;
     }
-
-    $payload = json_decode(base64UrlDecode($base64Payload), true);
-    if (!$payload || !isset($payload['exp']) || $payload['exp'] < time()) {
-        return null; // Expirado
+    $expected = hash_hmac('sha256', "{$h}.{$p}", jwtSecret(), true);
+    if (!hash_equals($expected, base64UrlDecode($s))) {
+        return null;
     }
-
+    $payload = json_decode(base64UrlDecode($p), true);
+    if (!is_array($payload) || !isset($payload['exp'], $payload['sub']) || (int)$payload['exp'] < time()) {
+        return null;
+    }
     return $payload;
+}
+
+/** Header Authorization desde cualquier SAPI/servidor. */
+function getAuthorizationHeader(): string {
+    foreach (['HTTP_AUTHORIZATION', 'REDIRECT_HTTP_AUTHORIZATION'] as $k) {
+        if (!empty($_SERVER[$k])) {
+            return (string)$_SERVER[$k];
+        }
+    }
+    if (function_exists('getallheaders')) {
+        foreach (getallheaders() as $name => $value) {
+            if (strcasecmp((string)$name, 'Authorization') === 0) {
+                return (string)$value;
+            }
+        }
+    }
+    return '';
 }
 
 function getBearerToken(): ?string {
-    $headers = getallheaders();
-    $authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? '';
-
-    if (empty($authHeader) && isset($_SERVER['HTTP_AUTHORIZATION'])) {
-        $authHeader = $_SERVER['HTTP_AUTHORIZATION'];
+    if (preg_match('/^Bearer\s+(\S+)$/i', trim(getAuthorizationHeader()), $m)) {
+        return $m[1];
     }
-
-    if (preg_match('/Bearer\s+(\S+)/i', $authHeader, $matches)) {
-        return $matches[1];
-    }
-
-    // Soporte para query param en descargas directas de PDFs
-    if (isset($_GET['token']) && !empty($_GET['token'])) {
-        return $_GET['token'];
-    }
-
     return null;
 }
 
+/**
+ * Exige sesión válida. Lee el usuario de la BD: debe existir y estar aprobado.
+ * Devuelve fila de usuario (sin hash) con claves extra 'sub' (= id).
+ */
 function requireAuth(): array {
-    $token = getBearerToken();
-    $payload = verifyToken($token);
-
+    $payload = verifyToken(getBearerToken());
     if (!$payload) {
-        jsonError('Acceso denegado: Token de sesión ausente, inválido o expirado.', 401);
+        jsonError('Sesión ausente, inválida o expirada. Inicie sesión nuevamente.', 401);
     }
-
-    return $payload;
+    $pdo = getDbConnection();
+    $st = $pdo->prepare('SELECT id, nombre, apellido, dni, email, rol, cargo_descripcion, estado, fecha_registro FROM usuarios WHERE id = :id');
+    $st->execute(['id' => (int)$payload['sub']]);
+    $u = $st->fetch();
+    if (!$u || $u['estado'] !== 'aprobado') {
+        jsonError('Su cuenta ya no está habilitada. Inicie sesión nuevamente.', 401);
+    }
+    $u['sub'] = (int)$u['id'];
+    return $u;
 }
 
 function requireRole(array|string $roles): array {
     $user = requireAuth();
-    $allowedRoles = is_array($roles) ? $roles : [$roles];
-
-    if (!in_array($user['rol'], $allowedRoles, true)) {
-        jsonError('Acceso prohibido: Su rol (' . $user['rol'] . ') no cuenta con permisos suficientes.', 403);
+    $allowed = is_array($roles) ? $roles : [$roles];
+    if (!in_array($user['rol'], $allowed, true)) {
+        jsonError('Acceso prohibido: su rol (' . $user['rol'] . ') no tiene permisos para esta acción.', 403);
     }
-
     return $user;
 }
 
+function isDirectivo(array $user): bool {
+    return in_array($user['rol'], ROLES_DIRECTIVOS, true);
+}

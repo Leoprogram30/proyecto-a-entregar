@@ -1,35 +1,83 @@
 @echo off
+setlocal
+chcp 65001 >nul
 title IPEM 349 - Iniciar Sistema
-echo ==============================================================================
-echo  IPEM N^° 349 "Giovanni Bosco" - Colonia Caroya, Cordoba
-echo  Iniciando Sistema de Gestion Curricular Agro y Ambiente
-echo ==============================================================================
+cd /d "%~dp0"
+
+echo ==============================================================
+echo  IPEM 349 "Giovanni Bosco" - Sistema de Gestion Curricular
+echo ==============================================================
 echo.
 
-echo 1. Iniciando API Backend PHP en http://127.0.0.1:8000 ...
-start "Backend PHP IPEM 349" /min cmd /c "php -S 127.0.0.1:8000 -t backend"
-timeout /t 2 /nobreak >nul
+rem --- PHP: primero el de XAMPP, si no el del PATH ---
+set "PHP=C:\xampp\php\php.exe"
+if not exist "%PHP%" set "PHP=php"
+"%PHP%" -v >nul 2>&1
+if errorlevel 1 goto :sinphp
 
-echo 2. Iniciando Servidor Frontend React en http://localhost:5173 ...
+where npm >nul 2>&1
+if errorlevel 1 goto :sinnode
+
+rem --- MySQL: si no responde, se intenta iniciar el de XAMPP ---
+echo [1/4] Verificando MySQL y la base de datos...
+"%PHP%" database\instalar.php
+if not errorlevel 1 goto :dblista
+
+if not exist "C:\xampp\mysql\bin\mysqld.exe" goto :sinmysql
+netstat -ano | findstr /r /c:":3306 .*LISTENING" >nul
+if not errorlevel 1 goto :errordb
+
+echo       Iniciando MySQL de XAMPP...
+start "MySQL XAMPP" /min /d "C:\xampp" "C:\xampp\mysql\bin\mysqld.exe" --defaults-file=C:\xampp\mysql\bin\my.ini --standalone
+set /a intentos=0
+:esperar
+ping -n 3 127.0.0.1 >nul
+set /a intentos+=1
+"%PHP%" database\instalar.php
+if not errorlevel 1 goto :dblista
+if %intentos% lss 10 goto :esperar
+goto :errordb
+
+:dblista
+echo [2/4] Iniciando API PHP en http://127.0.0.1:8000 ...
+start "Backend PHP IPEM 349" /min "%PHP%" -d display_errors=0 -d upload_max_filesize=12M -d post_max_size=14M -S 127.0.0.1:8000 -t backend backend/router.php
+
 cd frontend
-start "Frontend Vite IPEM 349" /min cmd /c "npm run dev"
-timeout /t 3 /nobreak >nul
-
-echo 3. Abriendo la aplicacion en tu navegador predeterminado...
-start http://localhost:5173
+if exist node_modules\vite goto :deps
+echo [3/4] Instalando dependencias del frontend (solo la primera vez)...
+call npm install
+if errorlevel 1 goto :errornpm
+:deps
+echo [4/4] Iniciando React en http://localhost:5173 ...
+start "Frontend React IPEM 349" /min cmd /c "npm run dev"
+ping -n 5 127.0.0.1 >nul
+start "" http://localhost:5173
 
 echo.
-echo ==============================================================================
-echo  El sistema ya esta corriendo:
-echo   - URL Web:     http://localhost:5173
-echo   - API Backend: http://127.0.0.1:8000/api/auth.php?action=all_users
+echo  Sistema iniciado: http://localhost:5173
+echo   Administrador: admin@ipem349.edu.ar        / admin123
+echo   Directora:     direccion@ipem349.edu.ar    / director123
+echo   Docente:       docente.agro@ipem349.edu.ar / docente123
 echo.
-echo  Credenciales de acceso rapido:
-echo   * Administrador:    admin@ipem349.edu.ar        / admin123
-echo   * Equipo Directivo: direccion@ipem349.edu.ar    / director123
-echo   * Docente Titular:  docente.agro@ipem349.edu.ar / docente123
-echo ==============================================================================
-echo.
-echo Presiona cualquier tecla para cerrar esta ventana informativa (los servidores seguiran activos).
-pause >nul
+echo  Para detenerlo, cierre las ventanas "Backend PHP" y "Frontend React".
+pause
+exit /b 0
 
+:sinphp
+echo ERROR: no se encontro PHP. Instale XAMPP.
+goto :fin
+:sinnode
+echo ERROR: no se encontro Node.js / npm. Instalelo desde https://nodejs.org
+goto :fin
+:sinmysql
+echo ERROR: MySQL no esta activo. Inicielo y vuelva a ejecutar este archivo.
+goto :fin
+:errordb
+echo ERROR: no se pudo preparar la base de datos. Revise el mensaje anterior,
+echo inicie MySQL desde el panel de XAMPP y vuelva a intentar.
+goto :fin
+:errornpm
+echo ERROR: fallo npm install.
+:fin
+pause
+exit /b 1

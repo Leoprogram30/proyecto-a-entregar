@@ -1,12 +1,11 @@
-# Redirección para Single Page Application (React Router / Vite) en Apache cPanel
+# Aplicación de una sola página (sin router): sirve index.html si la ruta no existe
 <IfModule mod_rewrite.c>
   RewriteEngine On
-  RewriteBase /
   RewriteRule ^index\.html$ - [L]
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteCond %{REQUEST_FILENAME} !-d
   RewriteCond %{REQUEST_FILENAME} !-l
-  RewriteRule . /index.html [L]
+  RewriteRule . index.html [L]
 </IfModule>
 
 # Seguridad y compresión básica

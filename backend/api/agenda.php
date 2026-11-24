@@ -1,144 +1,109 @@
 <?php
 /**
- * Endpoint de Agenda Docente e Hitos Evaluativos/Prácticas de Campo
+ * Agenda docente: clases, prácticas de campo, hitos evaluativos y entregas
  * IPEM N° 349 "Giovanni Bosco"
  */
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/../config/cors.php';
-require_once __DIR__ . '/../config/db.php';
-require_once __DIR__ . '/../helpers/response.php';
-require_once __DIR__ . '/../helpers/auth.php';
+require_once __DIR__ . '/../helpers/bootstrap.php';
 
-handleCors();
+const TIPOS_HITO = ['clase', 'practica_campo', 'hito_evaluativo', 'entrega_proyecto'];
 
 $pdo = getDbConnection();
 $user = requireAuth();
 $action = $_GET['action'] ?? 'list';
-$method = $_SERVER['REQUEST_METHOD'];
+
+function hitoFields(PDO $pdo, array $in, ?int $hitoId = null): array {
+    $espacioId = vId($in, 'espacio_id', 'espacio curricular');
+    requireEspacio($pdo, $espacioId, 'espacio_id', $hitoId ? ['tabla' => 'agenda_hitos', 'id' => $hitoId] : null);
+    return [
+        'eid' => $espacioId,
+        'tit' => vString($in, 'titulo', 'título', ['required' => true, 'max' => 150]),
+        'des' => vString($in, 'descripcion', 'descripción', ['max' => 5000]),
+        'tip' => vEnum($in, 'tipo', 'tipo', TIPOS_HITO, false, 'clase'),
+        'fec' => vDate($in, 'fecha', 'fecha', true),
+    ];
+}
+
+function ownHito(PDO $pdo, int $id, int $uid): array {
+    $st = $pdo->prepare('SELECT * FROM agenda_hitos WHERE id = :id');
+    $st->execute(['id' => $id]);
+    $h = $st->fetch();
+    if (!$h) {
+        jsonError('Actividad no encontrada.', 404);
+    }
+    if ((int)$h['docente_id'] !== $uid) {
+        jsonError('No tiene autorización sobre esta actividad.', 403);
+    }
+    return $h;
+}
 
 switch ($action) {
     case 'list':
-        $espacioId = isset($_GET['espacio_id']) ? (int)$_GET['espacio_id'] : null;
-        $targetDocenteId = ($user['rol'] !== 'docente' && isset($_GET['docente_id'])) ? (int)$_GET['docente_id'] : (int)$user['sub'];
-
-        $query = '
-            SELECT a.*, e.nombre AS espacio_nombre, e.anio AS espacio_anio
-            FROM agenda_hitos a
-            JOIN espacios_curriculares e ON a.espacio_id = e.id
-            WHERE a.docente_id = :docente_id
-        ';
-        $params = ['docente_id' => $targetDocenteId];
-
-        if ($espacioId) {
-            $query .= ' AND a.espacio_id = :espacio_id';
-            $params['espacio_id'] = $espacioId;
+        $espacioId = vId($_GET, 'espacio_id', 'espacio', false);
+        $target = $user['sub'];
+        if ($user['rol'] !== 'docente') {
+            $target = vId($_GET, 'docente_id', 'docente', false) ?? $user['sub'];
         }
-
-        $query .= ' ORDER BY a.fecha ASC';
-        $stmt = $pdo->prepare($query);
-        $stmt->execute($params);
-        $hitos = $stmt->fetchAll();
-
-        // Calcular estadísticas de avance
+        $sql = 'SELECT a.*, e.nombre AS espacio_nombre, e.anio AS espacio_anio
+                FROM agenda_hitos a JOIN espacios_curriculares e ON a.espacio_id = e.id
+                WHERE a.docente_id = :uid';
+        $params = ['uid' => $target];
+        if ($espacioId !== null) {
+            $sql .= ' AND a.espacio_id = :eid';
+            $params['eid'] = $espacioId;
+        }
+        $st = $pdo->prepare($sql . ' ORDER BY a.fecha ASC, a.id ASC');
+        $st->execute($params);
+        $hitos = $st->fetchAll();
         $total = count($hitos);
-        $completados = count(array_filter($hitos, fn($h) => (int)$h['completado'] === 1));
-        $porcentaje = $total > 0 ? round(($completados / $total) * 100) : 0;
-
+        $comp = count(array_filter($hitos, static fn($h) => (int)$h['completado'] === 1));
         jsonSuccess([
-            'hitos'       => $hitos,
-            'metricas'    => [
-                'total'       => $total,
-                'completados' => $completados,
-                'pendientes'  => $total - $completados,
-                'porcentaje'  => $porcentaje
-            ]
-        ], 'Agenda de hitos y clases obtenida');
-        break;
+            'hitos' => $hitos,
+            'metricas' => [
+                'total' => $total,
+                'completados' => $comp,
+                'pendientes' => $total - $comp,
+                'porcentaje' => $total > 0 ? (int)round($comp / $total * 100) : 0,
+            ],
+        ], 'Agenda obtenida');
 
     case 'create':
-        if ($method !== 'POST') {
-            jsonError('Método no permitido', 405);
-        }
-        $input = getJsonInput();
-        $espacioId = (int)($input['espacio_id'] ?? 0);
-        $titulo = trim($input['titulo'] ?? '');
-        $descripcion = trim($input['descripcion'] ?? '');
-        $tipo = in_array($input['tipo'] ?? '', ['clase', 'practica_campo', 'hito_evaluativo', 'entrega_proyecto'], true) ? $input['tipo'] : 'clase';
-        $fecha = trim($input['fecha'] ?? '');
+        requireRole(ROLES_AUTORES);
+        requireMethod('POST');
+        $f = hitoFields($pdo, getJsonInput());
+        $pdo->prepare('INSERT INTO agenda_hitos (docente_id, espacio_id, titulo, descripcion, tipo, fecha, completado)
+                       VALUES (:uid, :eid, :tit, :des, :tip, :fec, 0)')->execute($f + ['uid' => $user['sub']]);
+        jsonSuccess(['id' => (int)$pdo->lastInsertId()], 'Actividad agendada con éxito.', 201);
 
-        if (!$espacioId || empty($titulo) || empty($fecha)) {
-            jsonError('Espacio curricular, título y fecha son campos obligatorios.');
-        }
-
-        $stmt = $pdo->prepare('
-            INSERT INTO agenda_hitos (docente_id, espacio_id, titulo, descripcion, tipo, fecha, completado)
-            VALUES (:uid, :eid, :tit, :des, :tip, :fec, 0)
-        ');
-        $stmt->execute([
-            'uid' => $user['sub'],
-            'eid' => $espacioId,
-            'tit' => $titulo,
-            'des' => $descripcion,
-            'tip' => $tipo,
-            'fec' => $fecha
-        ]);
-
-        $newId = (int)$pdo->lastInsertId();
-        jsonSuccess(['id' => $newId], 'Hito/Actividad agendada con éxito.');
-        break;
+    case 'update':
+        requireRole(ROLES_AUTORES);
+        requireMethod('POST');
+        $in = getJsonInput();
+        $id = vId($in, 'id', 'actividad');
+        ownHito($pdo, $id, $user['sub']);
+        $f = hitoFields($pdo, $in, $id);
+        $pdo->prepare('UPDATE agenda_hitos SET espacio_id=:eid, titulo=:tit, descripcion=:des, tipo=:tip, fecha=:fec WHERE id=:id')
+            ->execute($f + ['id' => $id]);
+        jsonSuccess(['id' => $id], 'Actividad actualizada.');
 
     case 'toggle':
-        if ($method !== 'POST') {
-            jsonError('Método no permitido', 405);
-        }
-        $input = getJsonInput();
-        $id = (int)($input['id'] ?? 0);
-        if (!$id) {
-            jsonError('ID de hito inválido');
-        }
-
-        $check = $pdo->prepare('SELECT docente_id, completado FROM agenda_hitos WHERE id = :id');
-        $check->execute(['id' => $id]);
-        $row = $check->fetch();
-
-        if (!$row) {
-            jsonError('Hito no encontrado', 404);
-        }
-        if ($user['rol'] === 'docente' && (int)$row['docente_id'] !== (int)$user['sub']) {
-            jsonError('No tiene autorización para modificar este hito', 403);
-        }
-
-        $nuevoEstado = ((int)$row['completado'] === 1) ? 0 : 1;
-        $fechaComp = $nuevoEstado === 1 ? date('Y-m-d H:i:s') : null;
-
-        $upd = $pdo->prepare('UPDATE agenda_hitos SET completado = :comp, fecha_completado = :fec WHERE id = :id');
-        $upd->execute([
-            'comp' => $nuevoEstado,
-            'fec'  => $fechaComp,
-            'id'   => $id
-        ]);
-
-        jsonSuccess([
-            'id'         => $id,
-            'completado' => $nuevoEstado
-        ], $nuevoEstado === 1 ? '¡Hito marcado como completado!' : 'Hito marcado como pendiente.');
-        break;
+        requireMethod('POST');
+        $id = vId(getJsonInput(), 'id', 'actividad');
+        $h = ownHito($pdo, $id, $user['sub']);
+        $nuevo = ((int)$h['completado'] === 1) ? 0 : 1;
+        $pdo->prepare('UPDATE agenda_hitos SET completado = :c, fecha_completado = :f WHERE id = :id')
+            ->execute(['c' => $nuevo, 'f' => $nuevo === 1 ? date('Y-m-d H:i:s') : null, 'id' => $id]);
+        jsonSuccess(['id' => $id, 'completado' => $nuevo], $nuevo === 1 ? 'Actividad marcada como completada.' : 'Actividad marcada como pendiente.');
 
     case 'delete':
-        if ($method !== 'POST') {
-            jsonError('Método no permitido', 405);
-        }
-        $input = getJsonInput();
-        $id = (int)($input['id'] ?? 0);
-        $stmt = $pdo->prepare('DELETE FROM agenda_hitos WHERE id = :id AND docente_id = :uid');
-        $stmt->execute(['id' => $id, 'uid' => $user['sub']]);
+        requireMethod('POST');
+        $id = vId(getJsonInput(), 'id', 'actividad');
+        ownHito($pdo, $id, $user['sub']);
+        $pdo->prepare('DELETE FROM agenda_hitos WHERE id = :id')->execute(['id' => $id]);
         jsonSuccess(['id' => $id], 'Actividad eliminada de la agenda.');
-        break;
 
     default:
-        jsonError('Acción no reconocida en agenda', 404);
-        break;
+        jsonError('Acción no reconocida en agenda.', 404);
 }
-

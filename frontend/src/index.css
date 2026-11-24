@@ -8,3 +8,47 @@
     --color-ipem-gold: #d97706;
   }
 }
+
+/* Impresión: solo se imprime el contenido de .print-overlay (PrintablePlanning),
+   que fluye en tantas páginas como necesite. */
+@page {
+  size: A4;
+  margin: 15mm;
+}
+
+@media print {
+  body > *:not(.print-overlay) {
+    display: none !important;
+  }
+  body {
+    background: #fff !important;
+  }
+  .print-overlay {
+    position: static !important;
+    inset: auto !important;
+    display: block !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    background: none !important;
+  }
+  .print-sheet {
+    max-width: none !important;
+    max-height: none !important;
+    overflow: visible !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+  .print-sheet > div:last-child {
+    padding: 0 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-avoid-break {
+    break-inside: avoid;
+  }
+  h2 {
+    break-after: avoid;
+  }
+}

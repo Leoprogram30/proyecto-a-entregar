@@ -1,95 +1,80 @@
 <?php
 /**
- * Endpoint de Cronograma Institucional del Ciclo Lectivo (Córdoba)
+ * Cronograma institucional del ciclo lectivo
  * IPEM N° 349 "Giovanni Bosco"
  */
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/../config/cors.php';
-require_once __DIR__ . '/../config/db.php';
-require_once __DIR__ . '/../helpers/response.php';
-require_once __DIR__ . '/../helpers/auth.php';
+require_once __DIR__ . '/../helpers/bootstrap.php';
 
-handleCors();
+const TIPOS_EVENTO = ['inicio_clases', 'receso', 'evaluacion', 'feriado', 'cierre', 'academico'];
 
 $pdo = getDbConnection();
 $action = $_GET['action'] ?? 'list';
-$method = $_SERVER['REQUEST_METHOD'];
+
+function normalizeEvento(array $r): array {
+    $r['obligatorio'] = (int)$r['obligatorio'];
+    return $r;
+}
 
 switch ($action) {
     case 'list':
-        $anio = isset($_GET['anio']) ? (int)$_GET['anio'] : 2026;
-        $stmt = $pdo->prepare('
-            SELECT * FROM cronograma_institucional
-            WHERE anio_lectivo = :anio
-            ORDER BY fecha_inicio ASC
-        ');
-        $stmt->execute(['anio' => $anio]);
-        $eventos = $stmt->fetchAll();
-        jsonSuccess($eventos, 'Cronograma escolar oficial');
-        break;
+        requireAuth();
+        $anio = vInt($_GET, 'anio', 'año lectivo', ['min' => 2000, 'max' => 2100]);
+        $sql = 'SELECT * FROM cronograma_institucional';
+        $params = [];
+        if ($anio !== null) {
+            $sql .= ' WHERE anio_lectivo = :anio';
+            $params['anio'] = $anio;
+        }
+        $st = $pdo->prepare($sql . ' ORDER BY fecha_inicio ASC, id ASC');
+        $st->execute($params);
+        jsonSuccess(array_map('normalizeEvento', $st->fetchAll()), 'Cronograma escolar');
 
     case 'save':
-        // Solo administradores pueden agregar o modificar el cronograma escolar
-        $admin = requireRole(['admin']);
-        if ($method !== 'POST') {
-            jsonError('Método no permitido', 405);
+        requireRole(['admin']);
+        requireMethod('POST');
+        $in = getJsonInput();
+        $id = vId($in, 'id', 'evento', false);
+        $titulo = vString($in, 'titulo', 'título', ['required' => true, 'max' => 150]);
+        $desc = vString($in, 'descripcion', 'descripción', ['max' => 5000]);
+        $tipo = vEnum($in, 'tipo_evento', 'tipo de evento', TIPOS_EVENTO, false, 'academico');
+        $ini = vDate($in, 'fecha_inicio', 'fecha de inicio', true);
+        $fin = vDate($in, 'fecha_fin', 'fecha de fin', false, $ini);
+        $anio = vInt($in, 'anio_lectivo', 'año lectivo', ['min' => 2000, 'max' => 2100, 'default' => (int)substr($ini, 0, 4)]);
+        $obl = vBool($in, 'obligatorio', true);
+        if ($fin < $ini) {
+            validationError('fecha_fin', 'La fecha de fin no puede ser anterior a la de inicio.');
         }
 
-        $input = getJsonInput();
-        $id = !empty($input['id']) ? (int)$input['id'] : null;
-        $titulo = trim($input['titulo'] ?? '');
-        $descripcion = trim($input['descripcion'] ?? '');
-        $tipo = in_array($input['tipo_evento'] ?? '', ['inicio_clases', 'receso', 'evaluacion', 'feriado', 'cierre', 'academico'], true) ? $input['tipo_evento'] : 'academico';
-        $fechaInicio = trim($input['fecha_inicio'] ?? '');
-        $fechaFin = trim($input['fecha_fin'] ?? $fechaInicio);
-        $anioLectivo = (int)($input['anio_lectivo'] ?? 2026);
-        $obligatorio = isset($input['obligatorio']) ? (int)$input['obligatorio'] : 1;
-
-        if (empty($titulo) || empty($fechaInicio)) {
-            jsonError('El título y la fecha de inicio son requeridos.');
-        }
-
+        $params = ['tit' => $titulo, 'des' => $desc, 'tip' => $tipo, 'ini' => $ini, 'fin' => $fin, 'anio' => $anio, 'obl' => $obl];
         if ($id) {
-            $update = $pdo->prepare('
-                UPDATE cronograma_institucional
-                SET titulo = :tit, descripcion = :des, tipo_evento = :tip,
-                    fecha_inicio = :ini, fecha_fin = :fin, anio_lectivo = :anio, obligatorio = :obl
-                WHERE id = :id
-            ');
-            $update->execute([
-                'tit'  => $titulo,
-                'des'  => $descripcion,
-                'tip'  => $tipo,
-                'ini'  => $fechaInicio,
-                'fin'  => $fechaFin,
-                'anio' => $anioLectivo,
-                'obl'  => $obligatorio,
-                'id'   => $id
-            ]);
-            jsonSuccess(['id' => $id], 'Evento del cronograma institucional actualizado.');
-        } else {
-            $insert = $pdo->prepare('
-                INSERT INTO cronograma_institucional (titulo, descripcion, tipo_evento, fecha_inicio, fecha_fin, anio_lectivo, obligatorio)
-                VALUES (:tit, :des, :tip, :ini, :fin, :anio, :obl)
-            ');
-            $insert->execute([
-                'tit'  => $titulo,
-                'des'  => $descripcion,
-                'tip'  => $tipo,
-                'ini'  => $fechaInicio,
-                'fin'  => $fechaFin,
-                'anio' => $anioLectivo,
-                'obl'  => $obligatorio
-            ]);
-            $newId = (int)$pdo->lastInsertId();
-            jsonSuccess(['id' => $newId], 'Nuevo hito agregado al cronograma escolar.');
+            $st = $pdo->prepare('SELECT 1 FROM cronograma_institucional WHERE id = :id');
+            $st->execute(['id' => $id]);
+            if (!$st->fetchColumn()) {
+                jsonError('Evento no encontrado.', 404);
+            }
+            $params['id'] = $id;
+            $pdo->prepare('UPDATE cronograma_institucional SET titulo=:tit, descripcion=:des, tipo_evento=:tip,
+                           fecha_inicio=:ini, fecha_fin=:fin, anio_lectivo=:anio, obligatorio=:obl WHERE id=:id')->execute($params);
+            jsonSuccess(['id' => $id], 'Evento del cronograma actualizado.');
         }
-        break;
+        $pdo->prepare('INSERT INTO cronograma_institucional (titulo, descripcion, tipo_evento, fecha_inicio, fecha_fin, anio_lectivo, obligatorio)
+                       VALUES (:tit, :des, :tip, :ini, :fin, :anio, :obl)')->execute($params);
+        jsonSuccess(['id' => (int)$pdo->lastInsertId()], 'Evento agregado al cronograma.', 201);
+
+    case 'delete':
+        requireRole(['admin']);
+        requireMethod('POST');
+        $id = vId(getJsonInput(), 'id', 'evento');
+        $st = $pdo->prepare('DELETE FROM cronograma_institucional WHERE id = :id');
+        $st->execute(['id' => $id]);
+        if ($st->rowCount() === 0) {
+            jsonError('Evento no encontrado.', 404);
+        }
+        jsonSuccess(['id' => $id], 'Evento eliminado del cronograma.');
 
     default:
-        jsonError('Acción no reconocida en cronograma', 404);
-        break;
+        jsonError('Acción no reconocida en cronograma.', 404);
 }
-

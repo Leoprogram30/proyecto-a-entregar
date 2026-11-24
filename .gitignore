@@ -27,3 +27,10 @@ pnpm-debug.log*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Secretos y datos locales del backend
+backend/config/config.local.php
+backend/config/.jwt_secret
+backend/uploads/*.pdf
+!backend/uploads/oficial-*.pdf
+*.sqlite
