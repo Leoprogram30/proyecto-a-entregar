@@ -13,6 +13,8 @@ export default defineConfig(({ mode }) => {
     base: './',
     plugins: [react(), tailwindcss()],
     server: {
+      // IPv4 explícito: en Windows "localhost" puede quedar escuchando solo en IPv6 (::1)
+      host: '127.0.0.1',
       port: 5173,
       strictPort: true,
       proxy: {

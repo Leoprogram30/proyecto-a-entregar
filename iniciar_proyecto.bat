@@ -39,10 +39,16 @@ if %intentos% lss 10 goto :esperar
 goto :errordb
 
 :dblista
+rem --- Si la API o React ya estan activos, no se inician de nuevo ---
+"%PHP%" -r "exit(@fsockopen('127.0.0.1',8000)?0:1);" >nul 2>&1
+if not errorlevel 1 goto :apilista
 echo [2/4] Iniciando API PHP en http://127.0.0.1:8000 ...
 start "Backend PHP IPEM 349" /min "%PHP%" -d display_errors=0 -d upload_max_filesize=12M -d post_max_size=14M -S 127.0.0.1:8000 -t backend backend/router.php
+:apilista
 
 cd frontend
+"%PHP%" -r "exit(@fsockopen('127.0.0.1',5173)?0:1);" >nul 2>&1
+if not errorlevel 1 goto :weblista
 if exist node_modules\vite goto :deps
 echo [3/4] Instalando dependencias del frontend (solo la primera vez)...
 call npm install
@@ -50,7 +56,28 @@ if errorlevel 1 goto :errornpm
 :deps
 echo [4/4] Iniciando React en http://localhost:5173 ...
 start "Frontend React IPEM 349" /min cmd /c "npm run dev"
-ping -n 5 127.0.0.1 >nul
+
+rem --- Espera a que los dos servidores respondan antes de abrir el navegador (max. 60 s) ---
+set /a espera=0
+:esperarweb
+ping -n 2 127.0.0.1 >nul
+set /a espera+=1
+"%PHP%" -r "exit(@fsockopen('127.0.0.1',5173)?0:1);" >nul 2>&1
+if not errorlevel 1 goto :weblista
+if %espera% lss 60 goto :esperarweb
+goto :errorweb
+
+:weblista
+set /a espera=0
+:esperarapi
+"%PHP%" -r "exit(@fsockopen('127.0.0.1',8000)?0:1);" >nul 2>&1
+if not errorlevel 1 goto :abrir
+ping -n 2 127.0.0.1 >nul
+set /a espera+=1
+if %espera% lss 15 goto :esperarapi
+goto :errorapi
+
+:abrir
 start "" http://localhost:5173
 
 echo.
@@ -78,6 +105,14 @@ echo inicie MySQL desde el panel de XAMPP y vuelva a intentar.
 goto :fin
 :errornpm
 echo ERROR: fallo npm install.
+goto :fin
+:errorweb
+echo ERROR: React no respondio en el puerto 5173. Para ver el motivo, abra una
+echo consola en la carpeta frontend y ejecute: npm run dev
+goto :fin
+:errorapi
+echo ERROR: la API PHP no respondio en el puerto 8000. Cierre las ventanas
+echo "Backend PHP" y "Frontend React" y vuelva a ejecutar este archivo.
 :fin
 pause
 exit /b 1
