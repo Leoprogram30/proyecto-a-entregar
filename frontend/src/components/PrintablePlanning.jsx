@@ -2,6 +2,20 @@ import React from 'react';
 import { Printer, ArrowLeft, CheckCircle2 } from 'lucide-react';
 
 export default function PrintablePlanning({ plan, espacio, onClose }) {
+  const parseList = (val) => {
+    if (Array.isArray(val)) return val;
+    if (typeof val === 'string') {
+      try {
+        const parsed = JSON.parse(val);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+      if (val.trim()) return [val];
+    }
+    return [];
+  };
+
+  const safeObjetivos = parseList(plan.objetivos);
+  const safeContenidos = parseList(plan.contenidos);
   const handlePrint = () => {
     window.print();
   };
@@ -107,11 +121,9 @@ export default function PrintablePlanning({ plan, espacio, onClose }) {
               2. Objetivos de Aprendizaje Institucionales (Malla Córdoba)
             </h2>
             <ul className="list-disc list-inside space-y-1 text-xs text-slate-700">
-              {Array.isArray(plan.objetivos) ? (
-                plan.objetivos.map((obj, i) => <li key={i} className="leading-relaxed">{obj}</li>)
-              ) : (
-                <li>{plan.objetivos}</li>
-              )}
+              {safeObjetivos.map((obj, i) => (
+                <li key={i} className="leading-relaxed">{obj}</li>
+              ))}
             </ul>
           </section>
 
@@ -121,11 +133,9 @@ export default function PrintablePlanning({ plan, espacio, onClose }) {
               3. Aprendizajes y Contenidos Seleccionados
             </h2>
             <ul className="list-disc list-inside space-y-1 text-xs text-slate-700">
-              {Array.isArray(plan.contenidos) ? (
-                plan.contenidos.map((cnt, i) => <li key={i} className="leading-relaxed">{cnt}</li>)
-              ) : (
-                <li>{plan.contenidos}</li>
-              )}
+              {safeContenidos.map((cnt, i) => (
+                <li key={i} className="leading-relaxed">{cnt}</li>
+              ))}
             </ul>
           </section>
 

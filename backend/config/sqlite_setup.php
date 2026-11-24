@@ -281,3 +281,4 @@ function initSqliteDatabase(PDO $pdo): void {
         ");
     }
 }
+

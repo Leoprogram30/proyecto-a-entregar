@@ -17,6 +17,20 @@ import {
   MessageSquare
 } from 'lucide-react';
 
+// Helper para garantizar que un valor sea siempre un array seguro
+const ensureArray = (val) => {
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string') {
+    try {
+      const parsed = JSON.parse(val);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      if (val.trim()) return [val];
+    }
+  }
+  return [];
+};
+
 export default function PlanningWizard({ espacio, initialPlan = null, onSaved, onCancel }) {
   const { user } = useAuth();
   const [currentStep, setCurrentStep] = useState(1);
@@ -25,25 +39,33 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
   const [success, setSuccess] = useState('');
   const [showPrintModal, setShowPrintModal] = useState(false);
 
-  // Malla Curricular Oficial de Córdoba para el espacio curricular
+  // Malla Curricular Oficial de Córdoba para el espacio curricular (siempre objetos con arrays seguros)
   const [curriculumOfficial, setCurriculumOfficial] = useState({
-    objetivos: [],
-    contenidos: []
+    objetivos: [
+      `Comprender los procesos morfofisiológicos y conceptuales de ${espacio?.nombre || 'la disciplina'}.`,
+      'Diseñar y ejecutar labores técnicas respetando la sustentabilidad ambiental de Colonia Caroya.',
+      'Fomentar la responsabilidad comunitaria y el trabajo colaborativo en el entorno formativo escolar.'
+    ],
+    contenidos: [
+      'Eje 1: Marco Teórico y Fundamentos Disciplinares de la orientación.',
+      'Eje 2: Procedimientos Técnicos, Taller y Prácticas en Campo o Laboratorio.',
+      'Eje 3: Integración de Saberes y Aplicación al Contexto Socioproductivo de Caroya.'
+    ]
   });
 
   // Datos del Formulario de Planificación Anual
   const [formData, setFormData] = useState({
     id: initialPlan?.id || null,
-    espacio_id: espacio?.id || initialPlan?.espacio_id,
-    espacio_nombre: espacio?.nombre || initialPlan?.espacio_nombre || '',
+    espacio_id: espacio?.id || initialPlan?.espacio_id || 26,
+    espacio_nombre: espacio?.nombre || initialPlan?.espacio_nombre || 'Producción Vegetal I',
     espacio_anio: espacio?.anio || initialPlan?.espacio_anio || 4,
     anio_lectivo: initialPlan?.anio_lectivo || 2026,
     division: initialPlan?.division || 'A',
     docente_id: user?.id || 4,
-    docente_nombre: initialPlan?.docente_nombre || `${user?.nombre || ''} ${user?.apellido || ''}`,
+    docente_nombre: initialPlan?.docente_nombre || `${user?.nombre || 'Estela'} ${user?.apellido || 'Copetti'}`,
     diagnostico: initialPlan?.diagnostico || '',
-    objetivos: initialPlan?.objetivos || [],
-    contenidos: initialPlan?.contenidos || [],
+    objetivos: ensureArray(initialPlan?.objetivos),
+    contenidos: ensureArray(initialPlan?.contenidos),
     estrategias: initialPlan?.estrategias || '',
     formatos_pedagogicos: initialPlan?.formatos_pedagogicos || 'Asignatura teórica combinada con Taller de Huerta y Prácticas en Entorno Formativo.',
     recursos: initialPlan?.recursos || 'Canteros experimentales de la escuela, sistema de riego por goteo, compostera comunitaria, semillas INTA Jesús María y microscopios de laboratorio.',
@@ -62,36 +84,81 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
 
   const loadCurriculumData = async () => {
     if (!espacio?.id) return;
-    const detail = await api.getEspacioDetail(espacio.id);
-    if (detail?.contenidos) {
-      setCurriculumOfficial(detail.contenidos);
-      // Si la planificación está vacía, preseleccionar los objetivos y contenidos oficiales
-      if (!initialPlan && (!formData.objetivos || formData.objetivos.length === 0)) {
-        setFormData(prev => ({
-          ...prev,
-          objetivos: detail.contenidos.objetivos || [],
-          contenidos: detail.contenidos.contenidos || []
-        }));
+    try {
+      const detail = await api.getEspacioDetail(espacio.id);
+      let normObjetivos = [];
+      let normContenidos = [];
+
+      if (detail?.contenidos) {
+        if (Array.isArray(detail.contenidos)) {
+          // Si el backend devolvió filas de la base de datos SQL
+          normObjetivos = detail.contenidos
+            .filter(c => c && c.tipo === 'objetivo')
+            .map(c => c.descripcion || c.titulo);
+          normContenidos = detail.contenidos
+            .filter(c => c && c.tipo !== 'objetivo')
+            .map(c => c.descripcion ? `${c.titulo ? c.titulo + ': ' : ''}${c.descripcion}` : c.titulo);
+        } else if (typeof detail.contenidos === 'object') {
+          // Si vino como objeto con listas
+          normObjetivos = ensureArray(detail.contenidos.objetivos);
+          normContenidos = ensureArray(detail.contenidos.contenidos);
+        }
       }
+
+      // Si por alguna razón la BD o el mock estuviera vacío para esta materia, proveer objetivos institucionales sólidos
+      if (normObjetivos.length === 0) {
+        normObjetivos = [
+          `Comprender los procesos morfofisiológicos y conceptuales esenciales de ${espacio?.nombre || 'la materia'}.`,
+          'Diseñar y ejecutar labores técnicas respetando la sustentabilidad ambiental de Colonia Caroya.',
+          'Fomentar la responsabilidad comunitaria y el trabajo colaborativo en el entorno formativo escolar.'
+        ];
+      }
+      if (normContenidos.length === 0) {
+        normContenidos = [
+          'Eje 1: Marco Teórico y Fundamentos Disciplinares de la orientación.',
+          'Eje 2: Procedimientos Técnicos, Taller y Prácticas en Campo o Laboratorio.',
+          'Eje 3: Integración de Saberes y Aplicación al Contexto Socioproductivo de Caroya.'
+        ];
+      }
+
+      setCurriculumOfficial({
+        objetivos: normObjetivos,
+        contenidos: normContenidos
+      });
+
+      // Si la planificación es nueva o no tiene objetivos aún, preseleccionar todos los oficiales
+      setFormData(prev => {
+        const currentObjs = ensureArray(prev.objetivos);
+        const currentCnts = ensureArray(prev.contenidos);
+        return {
+          ...prev,
+          objetivos: currentObjs.length > 0 ? currentObjs : normObjetivos,
+          contenidos: currentCnts.length > 0 ? currentCnts : normContenidos
+        };
+      });
+    } catch (err) {
+      console.error('Error al cargar contenidos curriculares:', err);
     }
   };
 
   const handleToggleObjetivo = (obj) => {
     setFormData(prev => {
-      const exists = prev.objetivos.includes(obj);
+      const list = ensureArray(prev.objetivos);
+      const exists = list.includes(obj);
       return {
         ...prev,
-        objetivos: exists ? prev.objetivos.filter(o => o !== obj) : [...prev.objetivos, obj]
+        objetivos: exists ? list.filter(o => o !== obj) : [...list, obj]
       };
     });
   };
 
   const handleToggleContenido = (cnt) => {
     setFormData(prev => {
-      const exists = prev.contenidos.includes(cnt);
+      const list = ensureArray(prev.contenidos);
+      const exists = list.includes(cnt);
       return {
         ...prev,
-        contenidos: exists ? prev.contenidos.filter(c => c !== cnt) : [...prev.contenidos, cnt]
+        contenidos: exists ? list.filter(c => c !== cnt) : [...list, cnt]
       };
     });
   };
@@ -100,7 +167,7 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
     if (!customObjetivo.trim()) return;
     setFormData(prev => ({
       ...prev,
-      objetivos: [...prev.objetivos, customObjetivo.trim()]
+      objetivos: [...ensureArray(prev.objetivos), customObjetivo.trim()]
     }));
     setCustomObjetivo('');
   };
@@ -109,7 +176,7 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
     if (!customContenido.trim()) return;
     setFormData(prev => ({
       ...prev,
-      contenidos: [...prev.contenidos, customContenido.trim()]
+      contenidos: [...ensureArray(prev.contenidos), customContenido.trim()]
     }));
     setCustomContenido('');
   };
@@ -122,6 +189,8 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
     const targetEstado = submitToDirectivo ? 'pendiente_revision' : (formData.estado || 'borrador');
     const payload = {
       ...formData,
+      objetivos: ensureArray(formData.objetivos),
+      contenidos: ensureArray(formData.contenidos),
       estado: targetEstado
     };
 
@@ -141,6 +210,11 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
     }
   };
 
+  const safeObjetivos = ensureArray(formData.objetivos);
+  const safeContenidos = ensureArray(formData.contenidos);
+  const officialObjetivos = ensureArray(curriculumOfficial?.objetivos);
+  const officialContenidos = ensureArray(curriculumOfficial?.contenidos);
+
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       {/* Encabezado del Wizard */}
@@ -151,7 +225,7 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
               Asistente Paso a Paso
             </span>
             <span className="text-xs font-semibold text-slate-500">
-              {espacio?.anio || formData.espacio_anio}° Año "{formData.division}"
+              {espacio?.anio || formData.espacio_anio}° Año "{formData.division || 'A'}"
             </span>
           </div>
           <h2 className="text-xl font-extrabold text-slate-900 mt-1">
@@ -183,7 +257,7 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
         </div>
       </div>
 
-      {/* Alerta de Devolución del Equipo Directivo */}
+      {/* Alerta de Devolución del Equipo Directivo si existe */}
       {formData.devolucion_directivo && (
         <div className="bg-sky-50 border border-sky-300 rounded-2xl p-4 text-sky-900 text-xs flex items-start gap-3 shadow-xs">
           <MessageSquare className="w-5 h-5 text-sky-600 shrink-0 mt-0.5" />
@@ -264,7 +338,7 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">División</label>
                 <select
-                  value={formData.division}
+                  value={formData.division || 'A'}
                   onChange={(e) => setFormData({ ...formData, division: e.target.value })}
                   className="w-full p-2 text-xs border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
                 >
@@ -277,7 +351,7 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Docente Responsable</label>
                 <input
                   type="text"
-                  value={formData.docente_nombre}
+                  value={formData.docente_nombre || ''}
                   onChange={(e) => setFormData({ ...formData, docente_nombre: e.target.value })}
                   className="w-full p-2 text-xs border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500"
                 />
@@ -290,7 +364,7 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
               </label>
               <textarea
                 rows={5}
-                value={formData.diagnostico}
+                value={formData.diagnostico || ''}
                 onChange={(e) => setFormData({ ...formData, diagnostico: e.target.value })}
                 placeholder="Describa las características pedagógicas del curso, conocimientos previos, intereses por el entorno formativo huerta/campo y necesidades pedagógicas específicas..."
                 className="w-full p-3 text-xs border border-slate-300 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 leading-relaxed"
@@ -309,23 +383,24 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
                   <Sparkles className="w-3.5 h-3.5 text-amber-500" />
                   Objetivos Oficiales de la Provincia de Córdoba
                 </label>
-                <span className="text-[11px] text-slate-500">
-                  {formData.objetivos.length} seleccionados
+                <span className="text-[11px] text-slate-500 font-medium">
+                  {safeObjetivos.length} seleccionados
                 </span>
               </div>
+
               <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                {curriculumOfficial.objetivos.map((obj, i) => (
+                {officialObjetivos.map((obj, i) => (
                   <label
                     key={i}
                     className={`flex items-start gap-2.5 p-2.5 rounded-xl border text-xs cursor-pointer transition ${
-                      formData.objetivos.includes(obj)
+                      safeObjetivos.includes(obj)
                         ? 'border-emerald-500 bg-emerald-50/70 text-slate-900 font-medium'
                         : 'border-slate-200 hover:bg-slate-50 text-slate-600'
                     }`}
                   >
                     <input
                       type="checkbox"
-                      checked={formData.objetivos.includes(obj)}
+                      checked={safeObjetivos.includes(obj)}
                       onChange={() => handleToggleObjetivo(obj)}
                       className="mt-0.5 text-emerald-600 rounded focus:ring-emerald-500"
                     />
@@ -360,23 +435,24 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
                   <BookOpen className="w-3.5 h-3.5 text-sky-600" />
                   Ejes de Aprendizajes y Contenidos Fundamentales
                 </label>
-                <span className="text-[11px] text-slate-500">
-                  {formData.contenidos.length} seleccionados
+                <span className="text-[11px] text-slate-500 font-medium">
+                  {safeContenidos.length} seleccionados
                 </span>
               </div>
+
               <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                {curriculumOfficial.contenidos.map((cnt, i) => (
+                {officialContenidos.map((cnt, i) => (
                   <label
                     key={i}
                     className={`flex items-start gap-2.5 p-2.5 rounded-xl border text-xs cursor-pointer transition ${
-                      formData.contenidos.includes(cnt)
+                      safeContenidos.includes(cnt)
                         ? 'border-emerald-500 bg-emerald-50/70 text-slate-900 font-medium'
                         : 'border-slate-200 hover:bg-slate-50 text-slate-600'
                     }`}
                   >
                     <input
                       type="checkbox"
-                      checked={formData.contenidos.includes(cnt)}
+                      checked={safeContenidos.includes(cnt)}
                       onChange={() => handleToggleContenido(cnt)}
                       className="mt-0.5 text-emerald-600 rounded focus:ring-emerald-500"
                     />
@@ -415,7 +491,7 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
               </label>
               <input
                 type="text"
-                value={formData.formatos_pedagogicos}
+                value={formData.formatos_pedagogicos || ''}
                 onChange={(e) => setFormData({ ...formData, formatos_pedagogicos: e.target.value })}
                 placeholder="Ej. Taller, Laboratorio, Proyecto, Prácticas en Entorno Formativo de Campo..."
                 className="w-full p-2.5 text-xs border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500"
@@ -428,7 +504,7 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
               </label>
               <textarea
                 rows={4}
-                value={formData.estrategias}
+                value={formData.estrategias || ''}
                 onChange={(e) => setFormData({ ...formData, estrategias: e.target.value })}
                 placeholder="Aprendizaje Basado en Proyectos (ABP), estudio de casos agronómicos locales, demostraciones prácticas en huerta, bitácora de campo..."
                 className="w-full p-3 text-xs border border-slate-300 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 leading-relaxed"
@@ -441,7 +517,7 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
               </label>
               <textarea
                 rows={3}
-                value={formData.recursos}
+                value={formData.recursos || ''}
                 onChange={(e) => setFormData({ ...formData, recursos: e.target.value })}
                 placeholder="Canteros de la escuela, sistema de riego, compostera, semillas INTA, herramientas, microscopios de laboratorio..."
                 className="w-full p-3 text-xs border border-slate-300 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 leading-relaxed"
@@ -459,7 +535,7 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
               </label>
               <textarea
                 rows={4}
-                value={formData.evaluacion}
+                value={formData.evaluacion || ''}
                 onChange={(e) => setFormData({ ...formData, evaluacion: e.target.value })}
                 placeholder="Evaluación formativa, rúbricas de desempeño en entorno productivo huerta, informes de laboratorio, autoevaluación grupal..."
                 className="w-full p-3 text-xs border border-slate-300 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 leading-relaxed"
@@ -472,7 +548,7 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
               </label>
               <textarea
                 rows={3}
-                value={formData.bibliografia}
+                value={formData.bibliografia || ''}
                 onChange={(e) => setFormData({ ...formData, bibliografia: e.target.value })}
                 placeholder="Diseño Curricular Agro y Ambiente Córdoba (Res. Min. 251/14), manuales técnicos de INTA, guías del cinturón verde..."
                 className="w-full p-3 text-xs border border-slate-300 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 leading-relaxed"
@@ -528,7 +604,11 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
       {/* Modal de Impresión / Exportación Oficial en PDF */}
       {showPrintModal && (
         <PrintablePlanning
-          plan={formData}
+          plan={{
+            ...formData,
+            objetivos: safeObjetivos,
+            contenidos: safeContenidos
+          }}
           espacio={espacio}
           onClose={() => setShowPrintModal(false)}
         />
@@ -536,4 +616,3 @@ export default function PlanningWizard({ espacio, initialPlan = null, onSaved, o
     </div>
   );
 }
-

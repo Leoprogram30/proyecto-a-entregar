@@ -32,3 +32,4 @@ echo ===========================================================================
 echo.
 echo Presiona cualquier tecla para cerrar esta ventana informativa (los servidores seguiran activos).
 pause >nul
+

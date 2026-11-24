@@ -22,6 +22,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 import PrintablePlanning from './components/PrintablePlanning';
+import ErrorBoundary from './components/ErrorBoundary';
 
 function MainApp() {
   const { user, loading } = useAuth();
@@ -270,8 +271,10 @@ function MainApp() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <MainApp />
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <MainApp />
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }
